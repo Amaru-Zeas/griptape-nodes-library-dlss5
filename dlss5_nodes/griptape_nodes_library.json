@@ -1,0 +1,81 @@
+{
+    "name": "GTN DLSS 5 Neural Rendering",
+    "library_schema_version": "0.1.0",
+    "metadata": {
+        "author": "Griptape Community",
+        "description": "NVIDIA DLSS 5 Neural Rendering (+ DLSS Super Resolution) for video. Drives the worker from Merserk's 'DLSS 5 Visual Enhancer' (point runtime_dir at its bin\\runtime folder) or the bundled DLSS5-for-Nuke worker. Windows + RTX only.",
+        "library_version": "0.1.0",
+        "engine_version": "0.67.0",
+        "tags": [
+            "Griptape",
+            "Video",
+            "DLSS",
+            "Neural Rendering",
+            "Upscale",
+            "NVIDIA"
+        ],
+        "dependencies": {
+            "pip_dependencies": [
+                "imageio[ffmpeg]>=2.37.0",
+                "numpy>=1.26.0",
+                "opencv-python-headless>=4.8.0",
+                "pillow>=10.0.0"
+            ]
+        }
+    },
+    "settings": [
+        {
+            "description": "Folder of your unzipped 'DLSS 5 Visual Enhancer' app (the folder containing start.bat), or its bin\\runtime folder. Used whenever a node's runtime_dir is left empty.",
+            "category": "dlss5",
+            "contents": {
+                "runtime_dir": ""
+            }
+        }
+    ],
+    "categories": [
+        {
+            "DLSS5": {
+                "color": "border-green-500",
+                "title": "DLSS 5",
+                "description": "NVIDIA DLSS 5 neural rendering and super resolution",
+                "icon": "Sparkles"
+            }
+        }
+    ],
+    "widgets": [
+        {
+            "name": "DLSS5LivePreview",
+            "path": "widgets/DLSS5LivePreview.js",
+            "description": "Live before/after MJPEG preview with wipe, transport and scrubber for the DLSS 5 Live Preview node."
+        }
+    ],
+    "nodes": [
+        {
+            "class_name": "DLSS5InstructionsNode",
+            "file_path": "instructions_node.py",
+            "metadata": {
+                "category": "DLSS5",
+                "description": "Start here: how to set up and use the DLSS 5 Neural Rendering library, step by step.",
+                "display_name": "Instructions"
+            }
+        },
+        {
+            "class_name": "DLSS5NeuralRenderNode",
+            "file_path": "dlss5_video_node.py",
+            "metadata": {
+                "category": "DLSS5",
+                "description": "Run a video (or one preview frame) through DLSS 5 Neural Rendering with intensity / tone / structure / skin controls and optional 1.5x-3x DLSS Super Resolution.",
+                "display_name": "DLSS 5 Neural Render (Video)"
+            }
+        },
+        {
+            "class_name": "DLSS5LivePreviewNode",
+            "file_path": "dlss5_live_node.py",
+            "metadata": {
+                "category": "DLSS5",
+                "description": "Loop a clip through the native DLSS 5 worker and adjust tone / structure / skin / style live with a before-after wipe; Bake renders the full clip to the project's outputs. Uses the bundled native worker with the DLLs from a DLSS 5 Visual Enhancer install.",
+                "display_name": "DLSS 5 Live Preview"
+            }
+        }
+    ]
+}

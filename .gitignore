@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+build/
+_worker_src/
+
+# NVIDIA runtime binaries are never committed. The user supplies them.
+dlss5_nodes/runtime/nvngx_dlssnr.dll
+dlss5_nodes/runtime/_nvngx.dll
+dlss5_nodes/runtime/nvngx_dlss.dll
+dlss5_nodes/runtime/*.bin
