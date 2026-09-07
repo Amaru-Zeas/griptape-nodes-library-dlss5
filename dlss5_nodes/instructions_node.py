@@ -62,6 +62,11 @@ before/after.
 project's **outputs** folder as `<node name>_dlss5.mp4`, numbered instead of
 overwritten. Change the situation in `griptape-nodes-project.yml`, or press the cog on
 `output_file` to attach a File Output Settings node. No Save Video node needed.
+
+Renders larger than 3840x2160 cannot be hardware-decoded by the browser, so they stutter
+in Display Video. With `browser_proxy` on (default) the node also writes a UHD-fitted
+`<name>_proxy.mp4` and puts that on `output_video`; `output_file` is still the
+full-resolution master.
 Expect ~16-18 ms per 1080p frame at 1.0x (about 55-60 frames of footage per second,
 with or without optical flow) and ~40 ms per frame at 2.0x. Each run adds ~4 s of
 worker start-up. GPU usage looks low while rendering - that is normal: the neural pass

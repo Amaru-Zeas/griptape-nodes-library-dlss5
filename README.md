@@ -136,6 +136,7 @@ look best on generated footage; the remaining defaults are single-frame pipeline
 | `nr_preset` | Tuning preset. Measured to have no effect on current runtime builds. |
 | `color_transfer` | `native` backend only: hand sRGB as-is (game backbuffer convention) or linearise first (the Nuke node's convention). Ignored by `merserk` (RGBA8 as encoded). |
 | `keep_audio` | Copy the source audio track into the rendered output. |
+| `browser_proxy` | On by default. Browsers (and NVDEC) hardware-decode H.264 only up to 4096 px, so any render larger than 3840x2160 would stutter in Display Video. When that happens the node also writes `<name>_proxy.mp4` (UHD-fitted, H.264 High 5.1, CRF 19, audio copied) and puts *that* on `output_video`; `output_file` always keeps the full-resolution master. The `report` shows `port: WxH proxy` when it kicked in. |
 | `preview_frame` | Frame index used in test-one-frame mode. |
 | `preview_image` | Output port (ImageUrlArtifact) for test-one-frame mode. No thumbnail on the node; connect a Display Image node. |
 | `runtime_dir` | Path to a DLSS 5 Visual Enhancer install (`bin\runtime` or app root). Empty = library setting, then `DLSS5_RUNTIME_DIR`, else the bundled native worker. |
@@ -190,7 +191,7 @@ How to use:
 | `upscale_mode` | 1.0x-3.0x; hot-swap. |
 | `temporal` | `Single Frame` (default, no ghosting) or `Sequence` (history + in-worker DIS optical flow); hot-swap. |
 | `output_file` | Bake filename (project situation template, cog for File Output Settings). |
-| **Advanced** | `model_preset` (SR pass only, hot-swap), `dis_preset` (Sequence flow quality, hot-swap), `keep_audio` (bake), `max_cache_gb` (RAM for decoded frames, default 8 GB = ~55 s of 1080p or ~13 s of 4K; longer clips loop their first part), `preview_width` (the stream is downscaled to this width for the widget, default 1280 - the worker and the bake stay full-res), `preview_quality` (stream JPEG quality), `runtime_dir`. |
+| **Advanced** | `model_preset` (SR pass only, hot-swap), `dis_preset` (Sequence flow quality, hot-swap), `keep_audio` (bake), `browser_proxy` (bake: same UHD proxy rule as the render node), `max_cache_gb` (RAM for decoded frames, default 8 GB = ~55 s of 1080p or ~13 s of 4K; longer clips loop their first part), `preview_width` (the stream is downscaled to this width for the widget, default 1280 - the worker and the bake stay full-res), `preview_quality` (stream JPEG quality), `runtime_dir`. |
 | `report` / `logs` | Bake summary and worker / session log (collapsed **Logs** group). |
 
 Performance. The loop is four threads (decode -> send -> receive -> compose/encode) with

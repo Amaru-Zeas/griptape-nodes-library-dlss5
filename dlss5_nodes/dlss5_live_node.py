@@ -33,6 +33,7 @@ from griptape_nodes.exe_types.param_components.project_file_parameter import Pro
 from griptape_nodes.exe_types.param_types.parameter_button import ParameterButton
 from griptape_nodes.exe_types.param_types.parameter_dict import ParameterDict
 from griptape_nodes.files.file import File
+from griptape_nodes.files.project_file import ProjectFileDestination
 from griptape_nodes.retained_mode.griptape_nodes import GriptapeNodes
 from griptape_nodes.traits.options import Options
 from griptape_nodes.traits.slider import Slider
@@ -48,6 +49,8 @@ except ImportError:  # ensure sibling modules resolve regardless of loader
 from dlss5_live_bridge import NativeLiveWorker, NativeRuntime, find_native_runtime  # noqa: E402
 from dlss5_live_server import DEFAULT_PREVIEW_WIDTH, LiveSession  # noqa: E402
 from dlss5_video_node import (  # noqa: E402  (helpers only; the render node itself is untouched)
+    PROXY_MAX_HEIGHT,
+    PROXY_MAX_WIDTH,
     DLSS5NeuralRenderNode,
     _resolve_video_value,
     _to_rgb,
@@ -317,6 +320,18 @@ class DLSS5LivePreviewNode(ControlNode):
                 allowed_modes={ParameterMode.PROPERTY},
             )
             Parameter(
+                name="browser_proxy",
+                input_types=["bool"],
+                type="bool",
+                default_value=True,
+                tooltip=(
+                    f"Bake: when the render is larger than {PROXY_MAX_WIDTH}x{PROXY_MAX_HEIGHT}, also save a UHD H.264 "
+                    "proxy (<name>_proxy.mp4) and put THAT on output_video so Display Video plays it smoothly. Browsers "
+                    "cannot hardware-decode H.264 above 4096 px. output_file always keeps the full-resolution master."
+                ),
+                allowed_modes={ParameterMode.PROPERTY},
+            )
+            Parameter(
                 name="max_cache_gb",
                 input_types=["float"],
                 type="float",
@@ -456,6 +471,13 @@ class DLSS5LivePreviewNode(ControlNode):
             raise ValueError("Connect a video to the node first.")
         suffix = Path(video_value.split("?")[0]).suffix or ".mp4"
         return File(video_value).read_bytes(), suffix
+
+    def _save_sibling(self, suffix: str, data: bytes) -> File:
+        """Write ``<output_file stem><suffix>`` through the same project situation as output_file."""
+        value = self.get_parameter_value("output_file")
+        stem = Path(value if isinstance(value, str) and value else DEFAULT_OUTPUT_FILENAME).stem or "dlss5_live"
+        dest = ProjectFileDestination.from_situation(f"{stem}{suffix}", ProjectFileParameter.DEFAULT_SITUATION, node_name=self.name)
+        return dest.write_bytes(data)
 
     # ------------------------------------------------------------------ presets / live updates
 
@@ -685,10 +707,28 @@ class DLSS5LivePreviewNode(ControlNode):
 
                 saved = self._output_file.build_file().write_bytes(output_path.read_bytes())
                 self._log(f"Saved video to {saved.resolve()}\n")
-                artifact = VideoUrlArtifact(saved.location)
+                port_file, port_note = saved, ""
+                if bool(self.get_parameter_value("browser_proxy")) and helpers._needs_proxy(  # noqa: SLF001
+                    setup.output_width, setup.output_height
+                ):
+                    t_proxy = time.perf_counter()
+                    proxy = helpers._make_proxy(output_path, temp_dir)  # noqa: SLF001
+                    if proxy is not None:
+                        proxy_saved = self._save_sibling("_proxy.mp4", proxy.read_bytes())
+                        size = helpers._proxy_size(proxy) or (PROXY_MAX_WIDTH, PROXY_MAX_HEIGHT)  # noqa: SLF001
+                        port_file, port_note = proxy_saved, f" | port: {size[0]}x{size[1]} proxy"
+                        self._log(
+                            f"Render is above {PROXY_MAX_WIDTH}x{PROXY_MAX_HEIGHT} (no browser hardware decode). Saved a "
+                            f"{size[0]}x{size[1]} proxy for output_video in {time.perf_counter() - t_proxy:.1f} s: "
+                            f"{proxy_saved.resolve()}\n"
+                        )
+                    else:
+                        self._log("Proxy encode failed; output_video carries the full-resolution master.\n")
+                artifact = VideoUrlArtifact(port_file.location)
                 report = (
                     f"frames: {count} | fps: {fps:.3f} | out: {setup.output_width}x{setup.output_height} | "
                     f"{settings.upscale_mode} | {total_ms / count:.1f} ms/frame | audio: {'copied' if audio_copied else 'none'}"
+                    f"{port_note}"
                 )
             finally:
                 reader.close()

@@ -115,6 +115,9 @@ TRANSFER_CHOICES = [TRANSFER_ENCODED, TRANSFER_LINEAR]
 
 DEFAULT_FPS = 24.0
 DEFAULT_OUTPUT_FILENAME = "dlss5.mp4"
+# Largest frame a browser (and NVDEC) will hardware-decode as H.264. Renders above this get a proxy for the port.
+PROXY_MAX_WIDTH = 3840
+PROXY_MAX_HEIGHT = 2160
 # Frames allowed in flight between the sender thread and the worker. 2 is enough to hide our CPU work behind
 # the GPU; more only adds memory (each slot holds a full RGBA frame + motion buffer in the pipe).
 PIPELINE_DEPTH = 2
@@ -508,6 +511,18 @@ class DLSS5NeuralRenderNode(ControlNode):
                 allowed_modes={ParameterMode.PROPERTY},
             )
             Parameter(
+                name="browser_proxy",
+                input_types=["bool"],
+                type="bool",
+                default_value=True,
+                tooltip=(
+                    f"When the render is larger than {PROXY_MAX_WIDTH}x{PROXY_MAX_HEIGHT}, also save a UHD H.264 proxy "
+                    "(<name>_proxy.mp4) and put THAT on output_video so Display Video plays it smoothly. Browsers cannot "
+                    "hardware-decode H.264 above 4096 px. output_file always keeps the full-resolution master."
+                ),
+                allowed_modes={ParameterMode.PROPERTY},
+            )
+            Parameter(
                 name="preview_frame",
                 input_types=["int"],
                 type="int",
@@ -793,12 +808,14 @@ class DLSS5NeuralRenderNode(ControlNode):
 
     def _save_preview(self, png: bytes, frame_index: int) -> File:
         """Write the preview PNG next to where the video would go (same project situation)."""
+        return self._save_sibling(f"_preview_f{frame_index:04d}.png", png)
+
+    def _save_sibling(self, suffix: str, data: bytes) -> File:
+        """Write ``<output_file stem><suffix>`` through the same project situation as output_file."""
         value = self.get_parameter_value("output_file")
         stem = Path(value if isinstance(value, str) and value else DEFAULT_OUTPUT_FILENAME).stem or "dlss5"
-        dest = ProjectFileDestination.from_situation(
-            f"{stem}_preview_f{frame_index:04d}.png", ProjectFileParameter.DEFAULT_SITUATION, node_name=self.name
-        )
-        return dest.write_bytes(png)
+        dest = ProjectFileDestination.from_situation(f"{stem}{suffix}", ProjectFileParameter.DEFAULT_SITUATION, node_name=self.name)
+        return dest.write_bytes(data)
 
     # ---------------------------------------------------------------- render
 
@@ -914,12 +931,26 @@ class DLSS5NeuralRenderNode(ControlNode):
 
         saved = self._output_file.build_file().write_bytes(output_path.read_bytes())
         self.log_params.append_to_logs(f"Saved video to {saved.resolve()}\n")
-        self.parameter_output_values["output_video"] = VideoUrlArtifact(saved.location)
+        port_file, port_note = saved, ""
+        if bool(self.get_parameter_value("browser_proxy")) and self._needs_proxy(session.out_width, session.out_height):
+            t_proxy = time.perf_counter()
+            proxy = self._make_proxy(output_path, temp_dir)
+            if proxy is not None:
+                proxy_saved = self._save_sibling("_proxy.mp4", proxy.read_bytes())
+                size = self._proxy_size(proxy) or (PROXY_MAX_WIDTH, PROXY_MAX_HEIGHT)
+                port_file, port_note = proxy_saved, f" | port: {size[0]}x{size[1]} proxy"
+                self.log_params.append_to_logs(
+                    f"Render is above {PROXY_MAX_WIDTH}x{PROXY_MAX_HEIGHT} (no browser hardware decode). Saved a "
+                    f"{size[0]}x{size[1]} proxy for output_video in {time.perf_counter() - t_proxy:.1f} s: {proxy_saved.resolve()}\n"
+                )
+            else:
+                self.log_params.append_to_logs("Proxy encode failed; output_video carries the full-resolution master.\n")
+        self.parameter_output_values["output_video"] = VideoUrlArtifact(port_file.location)
         self.parameter_output_values["preview_image"] = None
         report = (
             f"frames: {count} | fps: {fps:.3f} | out: {session.out_width}x{session.out_height} | "
             f"{settings.upscale_mode} | {total_ms / count:.1f} ms/frame | audio: {'copied' if audio_copied else 'none'}"
-            f"{verified}"
+            f"{port_note}{verified}"
         )
         self.parameter_output_values["report"] = report
         self.log_params.append_to_logs("Done. " + report + "\n")
@@ -982,6 +1013,7 @@ class DLSS5NeuralRenderNode(ControlNode):
                 "-color_primaries", color["primaries"],
                 "-color_trc", color["trc"],
                 "-color_range", color["range"],
+                "-movflags", "+faststart",  # index at the front: the browser starts playing before the download ends
             ],
         )
 
@@ -999,9 +1031,62 @@ class DLSS5NeuralRenderNode(ControlNode):
             "-c:a", "aac",
             "-b:a", "192k",
             "-shortest",
+            "-movflags", "+faststart",
             str(muxed_path),
         ]
         completed = subprocess.run(command, capture_output=True, text=True, check=False)
         if completed.returncode == 0 and muxed_path.exists() and muxed_path.stat().st_size > 0:
             return muxed_path
+        return None
+
+    @staticmethod
+    def _needs_proxy(width: int, height: int) -> bool:
+        """Browsers hardware-decode H.264 only up to 4096 px (NVDEC limit); above UHD everything is CPU-decoded."""
+        return width > PROXY_MAX_WIDTH or height > PROXY_MAX_HEIGHT
+
+    @staticmethod
+    def _make_proxy(video_path: Path, temp_dir: Path) -> Path | None:
+        """Re-encode the master into a UHD-or-smaller H.264 level 5.1 file that Display Video can hardware-decode.
+
+        The master is untouched; this is only what goes on the ``output_video`` port. Audio is copied as-is.
+        """
+        ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+        proxy_path = temp_dir / "proxy.mp4"
+        fit = (
+            f"scale=w='min(iw,{PROXY_MAX_WIDTH})':h='min(ih,{PROXY_MAX_HEIGHT})':force_original_aspect_ratio=decrease,"
+            "scale=trunc(iw/2)*2:trunc(ih/2)*2"
+        )
+        command = [
+            ffmpeg_exe, "-y",
+            "-i", str(video_path),
+            "-map", "0:v:0",
+            "-map", "0:a?",
+            "-vf", fit,
+            "-c:v", "libx264",
+            "-preset", "fast",
+            "-crf", "19",
+            "-profile:v", "high",
+            "-level:v", "5.1",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "copy",
+            "-movflags", "+faststart",
+            str(proxy_path),
+        ]
+        completed = subprocess.run(command, capture_output=True, text=True, check=False)
+        if completed.returncode == 0 and proxy_path.exists() and proxy_path.stat().st_size > 0:
+            return proxy_path
+        return None
+
+    @staticmethod
+    def _proxy_size(path: Path) -> tuple[int, int] | None:
+        try:
+            reader = imageio.get_reader(str(path), format="FFMPEG")
+            try:
+                size = reader.get_meta_data().get("size")
+            finally:
+                reader.close()
+            if size:
+                return int(size[0]), int(size[1])
+        except Exception:  # noqa: BLE001 - informational only
+            pass
         return None
