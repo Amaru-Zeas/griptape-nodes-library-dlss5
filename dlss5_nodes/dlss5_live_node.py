@@ -627,10 +627,10 @@ class DLSS5LivePreviewNode(ControlNode):
                 f"style {settings.nr_style}, tone {settings.local_tone:.2f}, structure {settings.local_structure:.2f}, "
                 f"skin {settings.skin_structure:.2f}, mask {'on' if settings.auto_mask else 'off'}\n"
             )
-            reader = imageio.get_reader(str(input_path), format="FFMPEG")
+            fps = helpers._probe_fps(input_path)  # noqa: SLF001
+            # Pin decoding to the real frame rate (variable-rate clips otherwise decode duplicated frames).
+            reader = imageio.get_reader(str(input_path), format="FFMPEG", output_params=helpers._cfr_params(fps))  # noqa: SLF001
             try:
-                meta = reader.get_meta_data()
-                fps = float(meta.get("fps") or 24.0) or 24.0
                 first = _to_rgb(np.asarray(reader.get_data(0)))
                 height, width = first.shape[:2]
                 t0 = time.perf_counter()
@@ -711,6 +711,7 @@ class DLSS5LivePreviewNode(ControlNode):
                 if bool(self.get_parameter_value("browser_proxy")) and helpers._needs_proxy(  # noqa: SLF001
                     setup.output_width, setup.output_height
                 ):
+                    self._log("Encoding UHD browser proxy for output_video...\n")
                     t_proxy = time.perf_counter()
                     proxy = helpers._make_proxy(output_path, temp_dir)  # noqa: SLF001
                     if proxy is not None:

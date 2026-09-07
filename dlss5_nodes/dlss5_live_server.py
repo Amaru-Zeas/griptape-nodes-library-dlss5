@@ -428,9 +428,15 @@ class LiveSession:
                 self._on_state(self.state())
 
     def _open_clip(self) -> None:
-        self._reader = imageio.get_reader(str(self.video_path), format="FFMPEG")
+        probe = imageio.get_reader(str(self.video_path), format="FFMPEG")
+        try:
+            self.fps = float(probe.get_meta_data().get("fps") or DEFAULT_FPS) or DEFAULT_FPS
+        finally:
+            probe.close()
+        # Pin decoding to the real frame rate. Variable-rate clips (e.g. AI-generator exports tagged 60 fps that
+        # hold 24) otherwise decode duplicated frames at the nominal rate: 2.5x the GPU work and slow-motion playback.
+        self._reader = imageio.get_reader(str(self.video_path), format="FFMPEG", output_params=["-r", f"{self.fps:.6f}"])
         meta = self._reader.get_meta_data()
-        self.fps = float(meta.get("fps") or DEFAULT_FPS) or DEFAULT_FPS
         size = meta.get("size") or (0, 0)
         w, h = int(size[0]), int(size[1])
         first = np.ascontiguousarray(np.asarray(self._reader.get_data(0))[:, :, :3])

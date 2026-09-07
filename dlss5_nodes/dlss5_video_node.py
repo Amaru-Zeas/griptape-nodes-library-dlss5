@@ -701,17 +701,18 @@ class DLSS5NeuralRenderNode(ControlNode):
                 + "\n"
             )
 
+            fps = self._probe_fps(input_path)
             reader = imageio.get_reader(
                 str(input_path),
                 format="FFMPEG",
                 output_params=[
+                    *self._cfr_params(fps),
                     "-vf",
                     f"scale=in_color_matrix={_SCALE_MATRIX_MAP[color['matrix']]}:in_range={color['range']}",
                 ],
             )
             try:
                 meta = reader.get_meta_data()
-                fps = float(meta.get("fps", DEFAULT_FPS) or DEFAULT_FPS)
                 size = meta.get("size") or (0, 0)
                 width, height = int(size[0]), int(size[1])
                 if width <= 0 or height <= 0:
@@ -933,6 +934,7 @@ class DLSS5NeuralRenderNode(ControlNode):
         self.log_params.append_to_logs(f"Saved video to {saved.resolve()}\n")
         port_file, port_note = saved, ""
         if bool(self.get_parameter_value("browser_proxy")) and self._needs_proxy(session.out_width, session.out_height):
+            self.log_params.append_to_logs("Encoding UHD browser proxy for output_video...\n")
             t_proxy = time.perf_counter()
             proxy = self._make_proxy(output_path, temp_dir)
             if proxy is not None:
@@ -993,6 +995,29 @@ class DLSS5NeuralRenderNode(ControlNode):
         except Exception:
             pass
         return info
+
+    @staticmethod
+    def _probe_fps(input_path: Path) -> float:
+        """The clip's average frame rate as imageio reports it (what we write the output at)."""
+        try:
+            reader = imageio.get_reader(str(input_path), format="FFMPEG")
+            try:
+                return float(reader.get_meta_data().get("fps") or DEFAULT_FPS) or DEFAULT_FPS
+            finally:
+                reader.close()
+        except Exception:  # noqa: BLE001 - fall back to the default rate
+            return DEFAULT_FPS
+
+    @staticmethod
+    def _cfr_params(fps: float) -> list[str]:
+        """Reader output params that pin decoding to ``fps`` frames per second.
+
+        Without this ffmpeg emits raw frames at the stream's *nominal* rate (``tbr``), which for variable-rate
+        clips (phone captures, AI-generator exports tagged 60 fps but holding 24) is far above the real rate:
+        it duplicates frames, we render every duplicate, and the output written at the real fps plays in slow
+        motion (then gets cut short by the audio mux). For constant-rate clips this is a no-op.
+        """
+        return ["-r", f"{fps:.6f}"]
 
     @staticmethod
     def _open_writer(output_path: Path, fps: float, color: dict[str, Any]) -> Any:
@@ -1056,25 +1081,17 @@ class DLSS5NeuralRenderNode(ControlNode):
             f"scale=w='min(iw,{PROXY_MAX_WIDTH})':h='min(ih,{PROXY_MAX_HEIGHT})':force_original_aspect_ratio=decrease,"
             "scale=trunc(iw/2)*2:trunc(ih/2)*2"
         )
-        command = [
-            ffmpeg_exe, "-y",
-            "-i", str(video_path),
-            "-map", "0:v:0",
-            "-map", "0:a?",
-            "-vf", fit,
-            "-c:v", "libx264",
-            "-preset", "fast",
-            "-crf", "19",
-            "-profile:v", "high",
-            "-level:v", "5.1",
-            "-pix_fmt", "yuv420p",
-            "-c:a", "copy",
-            "-movflags", "+faststart",
-            str(proxy_path),
-        ]
-        completed = subprocess.run(command, capture_output=True, text=True, check=False)
-        if completed.returncode == 0 and proxy_path.exists() and proxy_path.stat().st_size > 0:
-            return proxy_path
+        head = [ffmpeg_exe, "-y", "-i", str(video_path), "-map", "0:v:0", "-map", "0:a?", "-vf", fit]
+        tail = ["-profile:v", "high", "-level:v", "5.1", "-pix_fmt", "yuv420p", "-c:a", "copy", "-movflags", "+faststart", str(proxy_path)]
+        # NVENC first (seconds for a whole clip on any RTX card), libx264 if the GPU encoder is unavailable.
+        encoders = (
+            ["-c:v", "h264_nvenc", "-preset", "p4", "-tune", "hq", "-rc", "vbr", "-cq", "21", "-b:v", "0"],
+            ["-c:v", "libx264", "-preset", "fast", "-crf", "19"],
+        )
+        for encoder in encoders:
+            completed = subprocess.run([*head, *encoder, *tail], capture_output=True, text=True, check=False)
+            if completed.returncode == 0 and proxy_path.exists() and proxy_path.stat().st_size > 0:
+                return proxy_path
         return None
 
     @staticmethod
