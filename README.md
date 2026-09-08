@@ -5,8 +5,6 @@ Rendering** (DLSS-NR, NGX Feature 18) and optionally **DLSS Super Resolution**.
 
 ## Demo
 
-<!-- INLINE_VIDEO: drag Griptape_DLSS5_Demo_readme_720p.mp4 into the GitHub README editor here to get an inline player -->
-
 [![DLSS 5 in Griptape Nodes - source vs. neural render](docs/demo_poster.jpg)](https://github.com/Amaru-Zeas/griptape-nodes-library-dlss5/releases/download/demo-video/Griptape_DLSS5_Demo.mp4)
 
 *60 s walkthrough, 4K. Click the image to download the full-quality video (73 MB).*
