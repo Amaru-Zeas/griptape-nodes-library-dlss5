@@ -3,6 +3,14 @@
 Prototype Griptape Nodes library that runs video through **NVIDIA DLSS 5 Neural
 Rendering** (DLSS-NR, NGX Feature 18) and optionally **DLSS Super Resolution**.
 
+## Demo
+
+<!-- INLINE_VIDEO: drag Griptape_DLSS5_Demo_readme_720p.mp4 into the GitHub README editor here to get an inline player -->
+
+[![DLSS 5 in Griptape Nodes - source vs. neural render](docs/demo_poster.jpg)](https://github.com/Amaru-Zeas/griptape-nodes-library-dlss5/releases/download/demo-video/Griptape_DLSS5_Demo.mp4)
+
+*60 s walkthrough, 4K. Click the image to download the full-quality video (73 MB).*
+
 The node drives one of two external worker processes; both own a D3D12 device, load the
 NGX runtime and speak a packed-binary protocol over stdin/stdout.
 `dlss5_nodes/dlss5_worker_bridge.py` is a pure-Python client for both;
