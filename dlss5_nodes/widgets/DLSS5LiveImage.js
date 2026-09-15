@@ -1,12 +1,9 @@
 // DLSS 5 Live Image widget — landscape layout.
 //
 // Left: before/after wipe of the still (JPEG from the node's LiveImageSession).
-// Right: look controls that hit /cmd on the live server (immediate) and onChange
-// the ParameterDict so the node can bake with the same settings.
-//
-// Parameter value:
-//   { url, status, message, look, local_tone, local_structure, skin_structure,
-//     auto_mask, nr_style, upscale_mode, model_preset, view, wipe }
+// Right: look controls. Sliders hit /cmd while dragging (GPU only); onChange to the
+// node runs on release so Bake stays in sync without lagging the UI.
+// Full screen shows only this landscape (preview + controls), not the node's buttons.
 
 const POLL_MS = 250;
 
@@ -91,13 +88,31 @@ function mkSlider(min, max, step, value) {
 }
 
 function mkCheck(label, checked) {
-  const row = stopDrag(el("label", "display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;color:var(--foreground, #eee);"));
+  const row = stopDrag(
+    el(
+      "label",
+      "display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;color:var(--foreground, #eee);",
+    ),
+  );
   const input = el("input", "cursor:pointer;");
   input.type = "checkbox";
   input.checked = !!checked;
   row.append(input, el("span", "", label));
   row._input = input;
   return row;
+}
+
+function mkBtn(label, title) {
+  const b = stopDrag(
+    el(
+      "button",
+      "padding:6px 10px;border-radius:6px;border:1px solid var(--border, #444);background:var(--background, #1b1b1b);" +
+        "color:var(--foreground, #eee);font-size:12px;cursor:pointer;line-height:1.3;white-space:nowrap;width:100%;",
+      label,
+    ),
+  );
+  if (title) b.title = title;
+  return b;
 }
 
 export default function DLSS5LiveImage(container, props) {
@@ -107,11 +122,13 @@ export default function DLSS5LiveImage(container, props) {
   }
 
   let onChange = props.onChange;
+  let latestProps = props;
   let url = "";
   let pollTimer = null;
-  let dragging = false;
+  let wiping = false;
   let emitting = false;
   let lastSeq = -1;
+  let fullscreen = false;
   let settings = {
     look: "Ultra (max realism)",
     local_tone: 1.0,
@@ -127,11 +144,16 @@ export default function DLSS5LiveImage(container, props) {
 
   const wrapper = el(
     "div",
-    "display:flex;flex-direction:row;gap:10px;width:100%;height:100%;min-height:360px;box-sizing:border-box;padding:6px;",
+    "display:flex;flex-direction:column;gap:8px;width:100%;height:100%;min-height:360px;box-sizing:border-box;padding:6px;",
   );
   wrapper.className = "nodrag nowheel";
 
-  // ── left: preview ───────────────────────────────────────────────────────
+  // Landscape body (this is what goes fullscreen — not Restart/Stop/Bake on the node).
+  const body = el(
+    "div",
+    "display:flex;flex-direction:row;gap:10px;flex:1 1 auto;min-height:320px;width:100%;box-sizing:border-box;",
+  );
+
   const stage = el(
     "div",
     "position:relative;flex:1 1 62%;min-width:220px;min-height:280px;background:#0e0e0e;border-radius:8px;" +
@@ -165,7 +187,6 @@ export default function DLSS5LiveImage(container, props) {
   );
   stage.append(img, placeholder, badgeL, badgeR, hud);
 
-  // ── right: controls ─────────────────────────────────────────────────────
   const panel = el(
     "div",
     "flex:0 0 280px;width:280px;max-width:42%;display:flex;flex-direction:column;gap:10px;" +
@@ -192,6 +213,9 @@ export default function DLSS5LiveImage(container, props) {
   const structure = mkSlider(0, 2, 0.01, settings.local_structure);
   const skin = mkSlider(-1, 2, 0.01, settings.skin_structure);
   const mask = mkCheck("Auto mask (skin)", settings.auto_mask);
+  const fullBtn = mkBtn("⛶  Full screen", "Full screen preview + controls (Esc to leave)");
+  const closeBtn = mkBtn("✕  Close full screen", "Leave full screen (Esc)");
+  closeBtn.hidden = true;
 
   function block(label, control) {
     const b = el("div", "");
@@ -209,10 +233,74 @@ export default function DLSS5LiveImage(container, props) {
     block("Upscale", upscaleSel),
     block("Model preset", presetSel),
     block("View", viewSel),
+    fullBtn,
+    closeBtn,
   );
 
-  wrapper.append(stage, panel);
+  body.append(stage, panel);
+  wrapper.append(body);
   container.appendChild(wrapper);
+
+  // Fullscreen overlay: only the landscape body (image + controls).
+  const overlay = el(
+    "div",
+    "position:fixed;inset:0;z-index:2147483000;background:#0a0a0a;display:none;flex-direction:column;" +
+      "padding:12px;box-sizing:border-box;",
+  );
+  overlay.className = "nodrag nowheel";
+  overlay.tabIndex = 0;
+
+  function enterFull() {
+    if (fullscreen) return;
+    fullscreen = true;
+    document.body.appendChild(overlay);
+    overlay.append(body);
+    overlay.style.display = "flex";
+    body.style.flex = "1 1 auto";
+    body.style.minHeight = "0";
+    body.style.height = "100%";
+    stage.style.borderRadius = "0";
+    panel.style.maxWidth = "320px";
+    panel.style.flex = "0 0 320px";
+    panel.style.width = "320px";
+    fullBtn.hidden = true;
+    closeBtn.hidden = false;
+    if (overlay.requestFullscreen) overlay.requestFullscreen().catch(() => {});
+    overlay.focus();
+  }
+
+  function leaveFull() {
+    if (!fullscreen) return;
+    fullscreen = false;
+    if (document.fullscreenElement === overlay && document.exitFullscreen) {
+      document.exitFullscreen().catch(() => {});
+    }
+    wrapper.append(body);
+    overlay.style.display = "none";
+    overlay.remove();
+    body.style.flex = "";
+    body.style.minHeight = "320px";
+    body.style.height = "";
+    stage.style.borderRadius = "8px";
+    panel.style.maxWidth = "42%";
+    panel.style.flex = "0 0 280px";
+    panel.style.width = "280px";
+    fullBtn.hidden = false;
+    closeBtn.hidden = true;
+  }
+
+  const onFsChange = () => {
+    if (fullscreen && document.fullscreenElement !== overlay) leaveFull();
+  };
+  document.addEventListener("fullscreenchange", onFsChange);
+  overlay.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      leaveFull();
+    }
+  });
+  fullBtn.addEventListener("click", enterFull);
+  closeBtn.addEventListener("click", leaveFull);
 
   // ── helpers ─────────────────────────────────────────────────────────────
 
@@ -237,9 +325,9 @@ export default function DLSS5LiveImage(container, props) {
     emitting = true;
     try {
       onChange({
-        status: props.value?.status || "running",
-        url: url || props.value?.url || "",
-        message: props.value?.message || "",
+        status: latestProps.value?.status || "running",
+        url: url || latestProps.value?.url || "",
+        message: latestProps.value?.message || "",
         look: settings.look,
         local_tone: settings.local_tone,
         local_structure: settings.local_structure,
@@ -275,7 +363,8 @@ export default function DLSS5LiveImage(container, props) {
     mask._input.checked = !!p.auto_mask;
   }
 
-  function pushLive() {
+  // GPU only — used while dragging sliders.
+  function pushLiveCmd() {
     cmd({
       local_tone: settings.local_tone,
       local_structure: settings.local_structure,
@@ -285,6 +374,11 @@ export default function DLSS5LiveImage(container, props) {
       upscale_mode: settings.upscale_mode,
       model_preset: settings.model_preset,
     });
+  }
+
+  // GPU + sync node (dropdowns / release).
+  function pushLive() {
+    pushLiveCmd();
     emitSettings();
   }
 
@@ -293,6 +387,24 @@ export default function DLSS5LiveImage(container, props) {
       settings.look = "Custom (use the sliders)";
       lookSel.value = settings.look;
     }
+  }
+
+  function bindSlider(row, key) {
+    const input = row._input;
+    input.addEventListener("input", () => {
+      settings[key] = Number(input.value);
+      markCustom();
+      pushLiveCmd(); // no onChange while dragging
+    });
+    const commit = () => {
+      settings[key] = Number(input.value);
+      emitSettings();
+    };
+    input.addEventListener("change", commit);
+    input.addEventListener("pointerup", commit);
+    input.addEventListener("keyup", (e) => {
+      if (e.key === "ArrowLeft" || e.key === "ArrowRight" || e.key === "Home" || e.key === "End") commit();
+    });
   }
 
   lookSel.addEventListener("change", () => {
@@ -317,28 +429,15 @@ export default function DLSS5LiveImage(container, props) {
     cmd({ view: settings.view });
     emitSettings();
   });
-  tone._input.addEventListener("input", () => {
-    settings.local_tone = Number(tone._input.value);
-    markCustom();
-    pushLive();
-  });
-  structure._input.addEventListener("input", () => {
-    settings.local_structure = Number(structure._input.value);
-    markCustom();
-    pushLive();
-  });
-  skin._input.addEventListener("input", () => {
-    settings.skin_structure = Number(skin._input.value);
-    markCustom();
-    pushLive();
-  });
+  bindSlider(tone, "local_tone");
+  bindSlider(structure, "local_structure");
+  bindSlider(skin, "skin_structure");
   mask._input.addEventListener("change", () => {
     settings.auto_mask = !!mask._input.checked;
     markCustom();
     pushLive();
   });
 
-  // wipe drag
   function wipeAt(clientX) {
     const r = stage.getBoundingClientRect();
     const x = Math.min(1, Math.max(0, (clientX - r.left) / Math.max(1, r.width)));
@@ -351,21 +450,21 @@ export default function DLSS5LiveImage(container, props) {
   }
   stage.addEventListener("pointerdown", (e) => {
     e.stopPropagation();
-    dragging = true;
+    wiping = true;
     stage.setPointerCapture?.(e.pointerId);
     wipeAt(e.clientX);
   });
   stage.addEventListener("pointermove", (e) => {
-    if (!dragging) return;
+    if (!wiping) return;
     wipeAt(e.clientX);
   });
-  const endDrag = () => {
-    if (!dragging) return;
-    dragging = false;
+  const endWipe = () => {
+    if (!wiping) return;
+    wiping = false;
     emitSettings();
   };
-  stage.addEventListener("pointerup", endDrag);
-  stage.addEventListener("pointercancel", endDrag);
+  stage.addEventListener("pointerup", endWipe);
+  stage.addEventListener("pointercancel", endWipe);
 
   img.addEventListener("load", showImage);
 
@@ -444,6 +543,7 @@ export default function DLSS5LiveImage(container, props) {
   }
 
   function update(nextProps) {
+    latestProps = nextProps;
     onChange = nextProps.onChange;
     const v = nextProps.value || {};
     syncControls(v);
@@ -455,6 +555,8 @@ export default function DLSS5LiveImage(container, props) {
   }
 
   function cleanup() {
+    leaveFull();
+    document.removeEventListener("fullscreenchange", onFsChange);
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = null;
     img.src = "";

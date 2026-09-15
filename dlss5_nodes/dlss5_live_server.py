@@ -161,6 +161,8 @@ class LiveServer:
                     server.broadcast.last_pull = time.monotonic()
                     self._send_bytes(200, server.broadcast.latest() or b"", "image/jpeg")
                 elif path == "/state":
+                    # Polling the widget counts as a viewer (image live uses /state, not MJPEG).
+                    server.broadcast.last_pull = time.monotonic()
                     self._send_bytes(200, json.dumps(server._get_state()).encode(), "application/json")
                 elif path == "/cmd":
                     args = {k: v[-1] for k, v in parse_qs(url.query).items()}
