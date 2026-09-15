@@ -95,6 +95,13 @@ is only a few milliseconds of each frame, so watch frames per second, not GPU %.
   `preview_frame` (Advanced) and connect a Display Image node to `preview_image`.
   A single frame takes a few seconds instead of a full render.
 
+**Stills: DLSS 5 Neural Render (Image)**
+Load Image -> **DLSS 5 Neural Render (Image)** -> Display Image. Same controls and
+presets as the video node, applied to one picture; `output_image` is saved through the
+project's outputs as `output_file` (default `dlss5.png`; `output_format` in Advanced
+picks PNG / JPEG / WebP). Alpha is kept. Like the video node, the `image` row has a
+pass-through out-port for a Compare Images node.
+
 **Live Preview node - dial the look in real time**
 **DLSS 5 Live Preview** is the second node. Instead of rendering and waiting, it loops
 your clip through a resident DLSS 5 worker and shows the result *inside the node* while

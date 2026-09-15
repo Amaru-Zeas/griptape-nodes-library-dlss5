@@ -69,6 +69,15 @@
             }
         },
         {
+            "class_name": "DLSS5NeuralRenderImageNode",
+            "file_path": "dlss5_image_node.py",
+            "metadata": {
+                "category": "DLSS5",
+                "description": "Run a single image through DLSS 5 Neural Rendering with the same look controls and quality presets as the video node, plus optional 1.5x-3x DLSS Super Resolution. Alpha is preserved.",
+                "display_name": "DLSS 5 Neural Render (Image)"
+            }
+        },
+        {
             "class_name": "DLSS5LivePreviewNode",
             "file_path": "dlss5_live_node.py",
             "metadata": {

@@ -156,6 +156,27 @@ and input size are unchanged, so preview re-runs skip D3D12/NGX initialisation. 
 `merserk` worker is started and stopped per run because ReShade only flushes its log on
 exit.
 
+## Node: DLSS 5 Neural Render (Image)
+
+The same neural pass for one still. Identical look controls and quality presets as the
+video node (`quality`, `upscale_mode`, `nr_style`, `intensity`, `local_tone`,
+`local_structure`, `skin_structure`, `auto_mask`; `model_preset`, `nr_preset`,
+`color_transfer`, `runtime_dir`, `verify_neural_rendering` under **Advanced**). The image
+is evaluated as a single frame, so the result matches a Single Frame video render of the
+same picture.
+
+| Parameter | Notes |
+| --- | --- |
+| `image` | Input (ImageArtifact / ImageUrlArtifact). The right-hand port passes the original through for Compare Images. |
+| `output_image` | Neural-rendered image (ImageUrlArtifact), saved through the project's `save_node_output` situation. |
+| `output_file` | Filename template, default `dlss5.png`; the extension follows `output_format`. |
+| `output_format` | PNG (lossless, keeps alpha), JPEG (quality 95, drops alpha) or WebP (quality 95). |
+
+Alpha is preserved: RGB goes through DLSS, the alpha channel is resized to the output size
+(matters with `upscale_mode` > 1x) and re-attached. Measured on a 1600x900 still: ~0.7 s for
+the pass plus ~4 s worker start with the `merserk` backend (per image; ReShade only flushes
+its log on exit), or a few hundred ms total with the `native` backend once the worker is warm.
+
 ## Node: DLSS 5 Live Preview
 
 Real-time version of the render node: the clip loops through a resident native worker
