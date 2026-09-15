@@ -190,7 +190,6 @@ class DLSS5LiveImageNode(ControlNode):
                 label="Bake image with these settings",
                 icon="image",
                 variant="secondary",
-                icon_class="text-[#d9c6a4]",
                 full_width=True,
                 tooltip="Render the still with the current live settings to output_file -> output_image.",
                 on_click=self._on_bake_clicked,
@@ -213,8 +212,8 @@ class DLSS5LiveImageNode(ControlNode):
                 input_types=["int"],
                 type="int",
                 default_value=DEFAULT_PREVIEW_WIDTH,
-                traits={Options(choices=[960, 1280, 1920, 2560])},
-                tooltip="Max width of the live preview stream (worker + bake stay full-res). Applies on the next Restart.",
+                traits={Options(choices=[0, 1280, 1920, 2560, 3840])},
+                tooltip="Max width of the live JPEG stream. 0 = match the image (full resolution). Bake is always full-res. Applies on the next Start.",
                 allowed_modes={ParameterMode.PROPERTY},
             )
             Parameter(
@@ -230,6 +229,7 @@ class DLSS5LiveImageNode(ControlNode):
                 allowed_modes={ParameterMode.PROPERTY, ParameterMode.INPUT},
             )
         self.add_node_element(advanced)
+        self._migrate_preview_width()
 
         self.add_parameter(
             Parameter(
@@ -344,6 +344,17 @@ class DLSS5LiveImageNode(ControlNode):
             if getattr(self, "name", None):
                 GriptapeNodes.handle_request(SetNodeMetadataRequest(node_name=self.name, metadata={"size": want}))
 
+    def _migrate_preview_width(self) -> None:
+        """Old default capped the live JPEG at 1280px; native match is the new default."""
+        raw = self.get_parameter_value("preview_width")
+        try:
+            pw = int(raw)
+        except (TypeError, ValueError):
+            pw = 0
+        if pw == 1280:
+            with contextlib.suppress(Exception):
+                self.set_parameter_value("preview_width", 0)
+
     def _sync_canvas_width(self, view: str) -> None:
         """Widen the node only for side-by-side so both stills fit; restore when leaving it.
 
@@ -410,7 +421,8 @@ class DLSS5LiveImageNode(ControlNode):
                 return
             session = self._session()
             if session is not None and session.running:
-                session.update_settings(self._settings())  # no-op when /cmd already applied it
+                # View/wipe are widget-side; only look fields hit the worker.
+                session.update_settings(self._settings())
             return
         if parameter.name == "image":
             image_input = value
@@ -440,10 +452,18 @@ class DLSS5LiveImageNode(ControlNode):
         _stop_session(self._session_key)
         runtime = self._runtime()
         rgb = self._load_rgb()
-        preview_width = int(self.get_parameter_value("preview_width") or DEFAULT_PREVIEW_WIDTH)
+        try:
+            preview_width = int(self.get_parameter_value("preview_width"))
+        except (TypeError, ValueError):
+            preview_width = 0
+        if preview_width == 1280:
+            preview_width = 0
         node_ref = weakref.ref(self)
         self._log(runtime.describe() + "\n")
-        self._log(f"Live still {rgb.shape[1]}x{rgb.shape[0]}{' + alpha' if self._alpha is not None else ''}\n")
+        self._log(
+            f"Live still {rgb.shape[1]}x{rgb.shape[0]}{' + alpha' if self._alpha is not None else ''}"
+            f"{'' if preview_width <= 0 else f' (preview cap {preview_width}px)'}\n"
+        )
 
         session = LiveImageSession(
             rgb,
@@ -567,6 +587,9 @@ def _on_session_state(node_ref: weakref.ReferenceType, state: dict[str, Any]) ->
         return
     message = str(state.get("error") or state.get("message") or "")
     status = "error" if state.get("error") else ("running" if state.get("running") else "stopped")
+    # A shutting-down session must not revive the widget after the user hit Stop.
+    if status == "running" and str(node._live_value().get("status") or "") == "stopped":
+        return
     url = ""
     session = None
     with _sessions_lock:

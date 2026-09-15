@@ -9,6 +9,10 @@ Rendering** (DLSS-NR, NGX Feature 18) and optionally **DLSS Super Resolution**.
 
 *60 s walkthrough, 4K. Click the image to download the full-quality video (73 MB).*
 
+![DLSS 5 Live Image — side by side with look controls](docs/live_image_ui.jpg)
+
+*DLSS 5 Live Image: source and neural render side by side, look / style / wipe on the right.*
+
 The node drives one of two external worker processes; both own a D3D12 device, load the
 NGX runtime and speak a packed-binary protocol over stdin/stdout.
 `dlss5_nodes/dlss5_worker_bridge.py` is a pure-Python client for both;
@@ -180,17 +184,19 @@ its log on exit), or a few hundred ms total with the `native` backend once the w
 ## Node: DLSS 5 Live Image
 
 Always-live still preview (separate from the one-shot Image node above). Landscape widget:
-before/after wipe on the left, look controls on the right. Connect an image and the
-resident native worker starts automatically; tone / structure / skin / mask / style apply
-on the next evaluate, upscale / model preset hot-swap the worker. *Bake image with these
-settings* (or run the node in a flow) writes `output_image` through the project's outputs.
+preview on the left, look controls on the right. Connect an image and the resident native
+worker starts automatically; tone / structure / skin / mask / style apply on the next
+evaluate, upscale / model preset hot-swap the worker. *Bake image with these settings*
+(or run the node in a flow) writes `output_image` through the project's outputs.
+
+![DLSS 5 Live Image UI](docs/live_image_ui.jpg)
 
 | Control | Notes |
 | --- | --- |
-| Widget | Look, style, tone, structure, skin, auto mask, upscale, model preset, view. Drag the wipe. |
-| Restart / Stop | Restart the worker on the current image, or free the GPU. |
+| Widget | Look, style, tone, structure, skin, auto mask, upscale, model preset, view (wipe / DLSS only / source / side by side). |
+| Start / Stop | Start is clickable while stopped. While live it reads **RUNNING** (not clickable); Stop frees the GPU. |
 | `output_file` / `output_format` | Bake destination (default `dlss5_live.png`) and PNG / JPEG / WebP. |
-| **Advanced** | `preview_width` (stream cap; bake stays full-res), `runtime_dir`. |
+| **Advanced** | `preview_width` (`0` = match the image, full-res stream; bake is always full-res), `runtime_dir`. |
 
 ## Node: DLSS 5 Live Video
 

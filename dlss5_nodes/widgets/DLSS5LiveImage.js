@@ -3,7 +3,8 @@
 // Visual language matches Shot Planner / Seedance / Omni Image widgets:
 // dark gray chrome (#0c0e11), muted amber accent (#d9c6a4 / #a58050), ui-monospace.
 //
-// Left: before/after wipe, or both full stills side by side. Right: look controls.
+// Left: original vs DLSS (wipe / after / before / side-by-side), composed in the
+// widget so View never fights Style. Right: look controls.
 // The picture is the session's MJPEG stream (frames arrive as soon as the GPU has
 // them - no polling, no per-frame engine traffic). Sliders hit /cmd while dragging;
 // onChange syncs the node once on release. Full screen shows only this landscape.
@@ -49,8 +50,10 @@ const UPSCALE = [
 ];
 const PRESETS = ["Default", "J", "K", "L", "M"];
 
-const IMG_FULL = "display:block;width:100%;height:100%;object-fit:contain;pointer-events:none;";
-const IMG_HALF = "display:block;flex:1 1 0;min-width:0;width:50%;height:100%;object-fit:contain;pointer-events:none;";
+// Decoder <img> tags stay off-stage. Chromium double-paints replaced images
+// inside a zoomed node (fitted copy + intrinsic copy — extra feet under the
+// portrait). Fullscreen looks fine because it leaves that zoom. The visible
+// preview is a canvas blit of those hidden decoders.
 
 function el(tag, css, text) {
   const e = document.createElement(tag);
@@ -66,16 +69,20 @@ function stopDrag(node) {
   return node;
 }
 
-function fieldLabel(text) {
-  return el("div", `font:11px/1.2 ${FONT};color:${C.label};margin:0 0 4px;letter-spacing:0.01em;`, text);
+function fieldLabel(text, color) {
+  return el(
+    "div",
+    `font:11px/1.2 ${FONT};color:${color || C.label};margin:0 0 4px;letter-spacing:0.01em;`,
+    text,
+  );
 }
 
-function mkSelect(options, value) {
+function mkSelect(options, value, { color } = {}) {
   const s = stopDrag(
     el(
       "select",
-      `width:100%;padding:5px 7px;border-radius:6px;border:1px solid ${C.inputBorder};` +
-        `background:${C.inputBg};color:${C.text};font:11.5px/1.3 ${FONT};cursor:pointer;box-sizing:border-box;outline:none;`,
+      `width:100%;padding:5px 7px;border-radius:6px;border:1px solid ${color ? C.accentBorder : C.inputBorder};` +
+        `background:${C.inputBg};color:${color || C.text};font:11.5px/1.3 ${FONT};cursor:pointer;box-sizing:border-box;outline:none;`,
     ),
   );
   options.forEach((opt) => {
@@ -83,6 +90,10 @@ function mkSelect(options, value) {
     const o = document.createElement("option");
     o.value = v;
     o.textContent = t;
+    if (color) {
+      o.style.color = color;
+      o.style.background = C.inputBg;
+    }
     s.appendChild(o);
   });
   if (value !== undefined) s.value = value;
@@ -169,6 +180,7 @@ export default function DLSS5LiveImage(container, props) {
   let latestProps = props;
   let url = "";
   let pollTimer = null;
+  let paintTimer = null;
   let firstFrameTimer = null;
   let retryTimer = null;
   let wiping = false;
@@ -180,6 +192,12 @@ export default function DLSS5LiveImage(container, props) {
   let pendingCmd = null;
   let sourceLoadedFor = "";
   let liveStatus = "stopped";
+  let stopLock = false;
+  let lastSeq = 0;
+  let lastWorkerMs = 500;
+  let progressUntilSeq = -1;
+  let progressStarted = 0;
+  let progressHideTimer = null;
   let settings = {
     look: "Ultra (max realism)",
     local_tone: 1.0,
@@ -213,12 +231,22 @@ export default function DLSS5LiveImage(container, props) {
       `border-radius:8px;overflow:hidden;display:flex;align-items:center;justify-content:center;cursor:col-resize;` +
       `user-select:none;box-sizing:border-box;`,
   );
-  const imgSrc = el("img", "display:none;"); // static source still (side by side only)
-  const img = el("img", IMG_FULL); // MJPEG stream: wipe / after / before, or the DLSS half of side by side
+  const fit = el("div", "position:relative;flex:0 0 auto;overflow:hidden;");
+  const canvas = el("canvas", "display:block;width:100%;height:100%;");
+  const imgSrc = el("img", ""); // hidden decoder: original still
+  const img = el("img", ""); // hidden decoder: MJPEG DLSS result
   imgSrc.draggable = false;
   img.draggable = false;
   imgSrc.alt = "";
   img.alt = "";
+  // Off-screen but large so Chromium decodes the full JPEG (an 8px box was
+  // downsampling the bitmap). Never painted — the canvas is the only visible copy.
+  const decoders = el(
+    "div",
+    "position:fixed;left:-8192px;top:0;width:8192px;height:8192px;opacity:0;pointer-events:none;overflow:hidden;",
+  );
+  decoders.append(imgSrc, img);
+  fit.append(canvas);
   const placeholder = el(
     "div",
     `position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;` +
@@ -243,7 +271,7 @@ export default function DLSS5LiveImage(container, props) {
       `background:rgba(12,14,17,.85);color:${C.muted};font:10.5px/1.4 ${FONT};pointer-events:none;white-space:pre;z-index:2;`,
     "",
   );
-  stage.append(imgSrc, img, placeholder, badgeL, badgeR, hud);
+  stage.append(fit, placeholder, badgeL, badgeR, hud);
 
   const panel = el(
     "div",
@@ -255,7 +283,7 @@ export default function DLSS5LiveImage(container, props) {
     LOOKS.map(([n]) => n),
     settings.look,
   );
-  const styleSel = mkSelect(STYLES, settings.nr_style);
+  const styleSel = mkSelect(STYLES, settings.nr_style, { color: C.accent });
   const upscaleSel = mkSelect(UPSCALE, settings.upscale_mode);
   const presetSel = mkSelect(PRESETS, settings.model_preset);
   const viewSel = mkSelect(
@@ -274,11 +302,21 @@ export default function DLSS5LiveImage(container, props) {
   const restartBtn = mkBtn("▶  Start live preview", "Start the resident worker on the current image");
   const stopBtn = mkBtn("■  Stop live preview", "Stop the worker and free the GPU");
   const fullBtn = mkBtn("⛶  Full screen", "Full screen preview + controls (Esc to leave)");
-  const bakeBtn = mkBtn("Bake image with these settings", "Render the still with the current live settings", {
-    accent: true,
-  });
+  const bakeBtn = mkBtn("Bake image with these settings", "Render the still with the current live settings");
   const closeBtn = mkBtn("✕  Close full screen", "Leave full screen (Esc)", { accent: true });
   closeBtn.hidden = true;
+
+  const styleProgress = el(
+    "div",
+    `margin:6px 0 0;height:3px;border-radius:2px;background:${C.inputBorder};overflow:hidden;`,
+  );
+  const styleProgressFill = el(
+    "div",
+    `height:100%;width:0%;background:${C.accentBar};border-radius:2px;transition:width .12s linear;`,
+  );
+  styleProgress.append(styleProgressFill);
+  const styleBlock = el("div", "");
+  styleBlock.append(fieldLabel("Style", C.accent), styleSel, styleProgress);
 
   function block(label, control) {
     const b = el("div", "");
@@ -288,7 +326,7 @@ export default function DLSS5LiveImage(container, props) {
 
   panel.append(
     block("Look", lookSel),
-    block("Style", styleSel),
+    styleBlock,
     block("Local tone", tone),
     block("Local structure", structure),
     block("Skin structure", skin),
@@ -304,7 +342,7 @@ export default function DLSS5LiveImage(container, props) {
   );
 
   body.append(stage, panel);
-  wrapper.append(body);
+  wrapper.append(body, decoders);
   container.appendChild(wrapper);
 
   // ── full screen ─────────────────────────────────────────────────────────
@@ -379,9 +417,13 @@ export default function DLSS5LiveImage(container, props) {
   fullBtn.addEventListener("click", enterFull);
   closeBtn.addEventListener("click", leaveFull);
 
-  // ── view layout ─────────────────────────────────────────────────────────
-  function isSplit() {
-    return settings.view === "split";
+  // ── view layout (canvas blit; decoder <img>s stay off-stage) ────────────
+  function afterReady() {
+    return img.naturalWidth > 8 && img.naturalHeight > 8;
+  }
+
+  function sourceReady() {
+    return imgSrc.naturalWidth > 8 && imgSrc.naturalHeight > 8;
   }
 
   function loadSource() {
@@ -390,23 +432,113 @@ export default function DLSS5LiveImage(container, props) {
     imgSrc.src = `${url}/source.jpg?t=${Date.now()}`;
   }
 
+  function blit(ctx, elImg, dx, dy, dw, dh) {
+    if (!elImg.naturalWidth || !elImg.naturalHeight || dw < 1 || dh < 1) return;
+    ctx.drawImage(elImg, 0, 0, elImg.naturalWidth, elImg.naturalHeight, dx, dy, dw, dh);
+  }
+
   function applyView() {
-    const split = isSplit();
-    if (split) {
-      stage.style.gap = "6px";
-      stage.style.padding = "6px";
-      imgSrc.style.cssText = IMG_HALF;
-      img.style.cssText = IMG_HALF;
-      loadSource();
-    } else {
-      stage.style.gap = "0";
-      stage.style.padding = "0";
-      imgSrc.style.cssText = "display:none;";
-      img.style.cssText = IMG_FULL;
+    const v = settings.view;
+    const split = v === "split";
+    const srcOk = sourceReady();
+    const afterOk = afterReady();
+    const sw = Math.max(1, stage.clientWidth);
+    const sh = Math.max(1, stage.clientHeight);
+    const nw = img.naturalWidth || imgSrc.naturalWidth;
+    const nh = img.naturalHeight || imgSrc.naturalHeight;
+
+    badgeL.hidden = v === "after";
+    badgeR.hidden = v === "before";
+    stage.style.cursor = v === "wipe" ? "col-resize" : "default";
+    loadSource();
+
+    if (!nw || !nh) return;
+
+    const scale = Math.min(sw / (split ? nw * 2 + 6 : nw), sh / nh);
+    const w = Math.max(1, Math.round(nw * scale));
+    const h = Math.max(1, Math.round(nh * scale));
+    const gap = split ? 6 : 0;
+    const cssW = split ? w * 2 + gap : w;
+
+    fit.style.cssText =
+      `position:relative;display:block;width:${cssW}px;height:${h}px;overflow:hidden;flex:0 0 auto;`;
+    canvas.style.width = "100%";
+    canvas.style.height = "100%";
+    // React Flow zooms the node. clientWidth is layout pixels; the on-screen
+    // box is getBoundingClientRect(). Match the backing store to screen pixels
+    // so the node preview is as sharp as fullscreen.
+    const br = fit.getBoundingClientRect();
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    let pxW = Math.max(1, Math.round(Math.max(br.width, cssW) * dpr));
+    let pxH = Math.max(1, Math.round(Math.max(br.height, h) * dpr));
+    const cap = 8192;
+    if (pxW > cap || pxH > cap) {
+      const s = cap / Math.max(pxW, pxH);
+      pxW = Math.max(1, Math.round(pxW * s));
+      pxH = Math.max(1, Math.round(pxH * s));
     }
-    badgeL.hidden = settings.view === "after";
-    badgeR.hidden = settings.view === "before";
-    stage.style.cursor = settings.view === "wipe" ? "col-resize" : "default";
+    if (canvas.width !== pxW || canvas.height !== pxH) {
+      canvas.width = pxW;
+      canvas.height = pxH;
+    }
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.setTransform(pxW / cssW, 0, 0, pxH / h, 0, 0);
+    ctx.clearRect(0, 0, cssW, h);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+
+    if (split) {
+      if (srcOk) blit(ctx, imgSrc, 0, 0, w, h);
+      if (afterOk) blit(ctx, img, w + gap, 0, w, h);
+      return;
+    }
+    if (v === "after" && afterOk) {
+      blit(ctx, img, 0, 0, w, h);
+      return;
+    }
+    if (v === "before" && srcOk) {
+      blit(ctx, imgSrc, 0, 0, w, h);
+      return;
+    }
+    // wipe (or waiting on the DLSS frame): original first, then the right-hand DLSS slice
+    if (srcOk) blit(ctx, imgSrc, 0, 0, w, h);
+    if (afterOk) {
+      const mid = Math.min(w, Math.max(0, Math.round(settings.wipe * w)));
+      if (mid < w) {
+        const sx = (mid / w) * img.naturalWidth;
+        ctx.drawImage(
+          img,
+          sx,
+          0,
+          img.naturalWidth - sx,
+          img.naturalHeight,
+          mid,
+          0,
+          w - mid,
+          h,
+        );
+      }
+      ctx.fillStyle = "#fff";
+      ctx.fillRect(Math.max(0, mid - 1), 0, 2, h);
+    }
+  }
+
+  function revealPreview() {
+    if (afterReady() || sourceReady()) placeholder.style.display = "none";
+    applyView();
+    if (firstFrameTimer && afterReady()) {
+      clearInterval(firstFrameTimer);
+      firstFrameTimer = null;
+    }
+  }
+
+  let stageRO = null;
+  if (typeof ResizeObserver !== "undefined") {
+    stageRO = new ResizeObserver(() => applyView());
+    stageRO.observe(stage);
+  } else {
+    window.addEventListener("resize", applyView);
   }
 
   // ── server I/O ──────────────────────────────────────────────────────────
@@ -439,28 +571,30 @@ export default function DLSS5LiveImage(container, props) {
     }
   }
 
-  function showImage() {
-    placeholder.style.display = "none";
-    if (firstFrameTimer) {
-      clearInterval(firstFrameTimer);
-      firstFrameTimer = null;
-    }
-  }
-
   function connectStream() {
     if (!url) return;
     img.src = `${url}/stream.mjpg?t=${Date.now()}`;
     if (firstFrameTimer) clearInterval(firstFrameTimer);
     // Chromium does not reliably fire `load` for multipart streams: watch for pixels.
     firstFrameTimer = setInterval(() => {
-      if (img.naturalWidth > 0) showImage();
-    }, 100);
+      if (afterReady()) revealPreview();
+    }, 80);
+    if (!paintTimer) {
+      paintTimer = setInterval(() => {
+        tickProgress();
+        if (afterReady() || sourceReady()) applyView();
+      }, 50);
+    }
   }
 
   function disconnectStream() {
     if (firstFrameTimer) {
       clearInterval(firstFrameTimer);
       firstFrameTimer = null;
+    }
+    if (paintTimer) {
+      clearInterval(paintTimer);
+      paintTimer = null;
     }
     if (retryTimer) {
       clearTimeout(retryTimer);
@@ -471,14 +605,16 @@ export default function DLSS5LiveImage(container, props) {
     sourceLoadedFor = "";
   }
 
-  img.addEventListener("load", showImage);
+  img.addEventListener("load", revealPreview);
+  imgSrc.addEventListener("load", revealPreview);
   img.addEventListener("error", () => {
-    // Stream dropped (worker restart, server gone). Retry while the node still says running.
-    if (!url || retryTimer) return;
+    // Multipart streams sometimes fire a spurious error between parts. Don't
+    // abort a stream that already painted; otherwise wait and retry.
+    if (!url || retryTimer || afterReady()) return;
     retryTimer = setTimeout(() => {
       retryTimer = null;
-      if (url) connectStream();
-    }, 1000);
+      if (url && !afterReady()) connectStream();
+    }, 1500);
   });
 
   function poll() {
@@ -489,11 +625,15 @@ export default function DLSS5LiveImage(container, props) {
         const ms = st.worker_ms != null ? `${st.worker_ms.toFixed?.(1) ?? st.worker_ms} ms` : "";
         const size = st.out_width ? `${st.out_width}×${st.out_height}` : "";
         hud.textContent = [st.message || "", size, ms].filter(Boolean).join("  ·  ");
+        if (typeof st.seq === "number") lastSeq = st.seq;
+        if (st.worker_ms) lastWorkerMs = Number(st.worker_ms);
+        if (progressUntilSeq >= 0 && lastSeq > progressUntilSeq && !st.busy && !sliding) endProgress();
+        else tickProgress();
         if (st.error) {
           placeholder.textContent = st.error;
           placeholder.style.display = "flex";
-        } else if (img.naturalWidth > 0) {
-          showImage();
+        } else {
+          revealPreview();
         }
       })
       .catch(() => {});
@@ -510,8 +650,9 @@ export default function DLSS5LiveImage(container, props) {
     if (url) {
       placeholder.textContent = "Starting DLSS 5…";
       placeholder.style.display = "flex";
+      beginProgress();
+      loadSource();
       connectStream();
-      if (isSplit()) loadSource();
       poll();
       pollTimer = setInterval(poll, STATE_POLL_MS);
     } else {
@@ -521,20 +662,63 @@ export default function DLSS5LiveImage(container, props) {
           ? "Preview stopped — Start live preview to resume."
           : "Connect an image — live preview starts automatically.";
       hud.textContent = "";
+      applyView();
     }
   }
 
   // ── node sync ───────────────────────────────────────────────────────────
+  function armButton(btn, enabled) {
+    btn.disabled = !enabled;
+    btn.style.opacity = enabled ? "1" : "0.45";
+    btn.style.cursor = enabled ? "pointer" : "default";
+    if (!enabled) btn.style.filter = "";
+  }
+
+  function beginProgress() {
+    if (progressHideTimer) {
+      clearTimeout(progressHideTimer);
+      progressHideTimer = null;
+    }
+    if (progressUntilSeq < 0) {
+      progressStarted = performance.now();
+      styleProgressFill.style.transition = "width .12s linear";
+      styleProgressFill.style.width = "8%";
+    }
+    progressUntilSeq = lastSeq;
+  }
+
+  function tickProgress() {
+    if (progressUntilSeq < 0) return;
+    const exp = Math.max(180, lastWorkerMs * 1.2);
+    const t = (performance.now() - progressStarted) / exp;
+    styleProgressFill.style.width = `${Math.min(92, 8 + t * 84)}%`;
+  }
+
+  function endProgress() {
+    if (progressUntilSeq < 0) return;
+    progressUntilSeq = -1;
+    styleProgressFill.style.width = "100%";
+    progressHideTimer = setTimeout(() => {
+      progressHideTimer = null;
+      styleProgressFill.style.transition = "width .25s ease";
+      styleProgressFill.style.width = "0%";
+    }, 180);
+  }
+
   function syncTransport(status) {
     liveStatus = status || liveStatus;
     const running = liveStatus === "running";
-    restartBtn.textContent = running ? "↻  Restart live preview" : "▶  Start live preview";
-    restartBtn.title = running
-      ? "Restart the resident worker on the current image"
-      : "Start the resident worker on the current image";
-    stopBtn.disabled = !running;
-    stopBtn.style.opacity = running ? "1" : "0.45";
-    stopBtn.style.cursor = running ? "pointer" : "default";
+    if (running) {
+      restartBtn.textContent = "RUNNING";
+      restartBtn.title = "Live preview is running. Stop to free the GPU, then Start to run again.";
+      armButton(restartBtn, false);
+      armButton(stopBtn, true);
+    } else {
+      restartBtn.textContent = "▶  Start live preview";
+      restartBtn.title = "Start the resident worker on the current image";
+      armButton(restartBtn, true);
+      armButton(stopBtn, false);
+    }
   }
 
   function payload(extra) {
@@ -611,6 +795,7 @@ export default function DLSS5LiveImage(container, props) {
   }
 
   function pushLive() {
+    beginProgress();
     cmdSoon({
       local_tone: settings.local_tone,
       local_structure: settings.local_structure,
@@ -638,6 +823,7 @@ export default function DLSS5LiveImage(container, props) {
       markCustom();
       const one = {};
       one[key] = settings[key];
+      beginProgress();
       cmdSoon(one); // GPU only; the node hears about it once, on release
     });
     const commit = () => {
@@ -672,24 +858,33 @@ export default function DLSS5LiveImage(container, props) {
   });
   upscaleSel.addEventListener("change", () => {
     settings.upscale_mode = upscaleSel.value;
+    beginProgress();
     cmd({ upscale_mode: settings.upscale_mode });
     emitSettings();
   });
   presetSel.addEventListener("change", () => {
     settings.model_preset = presetSel.value;
+    beginProgress();
     cmd({ model_preset: settings.model_preset });
     emitSettings();
   });
-  restartBtn.addEventListener("click", () => emitAction("restart"));
+  restartBtn.addEventListener("click", () => {
+    if (restartBtn.disabled || liveStatus === "running") return;
+    stopLock = false;
+    emitAction("restart");
+  });
   stopBtn.addEventListener("click", () => {
-    if (stopBtn.disabled) return;
+    if (stopBtn.disabled && liveStatus !== "running") return;
+    stopLock = true;
+    syncTransport("stopped");
+    setUrl("");
     emitAction("stop");
   });
   bakeBtn.addEventListener("click", () => emitAction("bake"));
   viewSel.addEventListener("change", () => {
     settings.view = viewSel.value;
+    wiping = false;
     applyView();
-    cmd({ view: settings.view });
     emitSettings(); // node widens / restores the canvas width for side by side
   });
   bindSlider(tone, "local_tone");
@@ -701,12 +896,12 @@ export default function DLSS5LiveImage(container, props) {
     pushLive();
   });
 
-  // ── wipe ────────────────────────────────────────────────────────────────
+  // ── wipe (CSS clip on the DLSS frame — no server round-trip while dragging)
   function wipeAt(clientX) {
-    const r = stage.getBoundingClientRect();
+    const r = fit.getBoundingClientRect();
     const x = Math.min(1, Math.max(0, (clientX - r.left) / Math.max(1, r.width)));
     settings.wipe = x;
-    cmdSoon({ wipe: x.toFixed(4), view: "wipe" });
+    applyView();
   }
   stage.addEventListener("pointerdown", (e) => {
     if (settings.view !== "wipe") return;
@@ -722,7 +917,6 @@ export default function DLSS5LiveImage(container, props) {
   const endWipe = () => {
     if (!wiping) return;
     wiping = false;
-    flushCmd();
     emitSettings();
   };
   stage.addEventListener("pointerup", endWipe);
@@ -731,6 +925,8 @@ export default function DLSS5LiveImage(container, props) {
   // ── props ───────────────────────────────────────────────────────────────
   function syncControls(v) {
     if (!v || v._fromWidget) return;
+    // Status ticks from the session (_fromNode) must not reset Style / View / sliders.
+    if (v._fromNode) return;
     if (sliding || wiping) return; // never fight an active drag
     const keys = [
       "look",
@@ -771,6 +967,10 @@ export default function DLSS5LiveImage(container, props) {
     latestProps = nextProps;
     onChange = nextProps.onChange;
     const v = nextProps.value || {};
+    if (stopLock) {
+      if (v.status === "running") return; // shutting down: don't flash RUNNING
+      stopLock = false;
+    }
     if (v.status) syncTransport(v.status);
     syncControls(v);
     setUrl(v.url || "");
@@ -780,6 +980,8 @@ export default function DLSS5LiveImage(container, props) {
     } else if (v.status === "stopped" && !v.url) {
       placeholder.style.display = "flex";
       placeholder.textContent = v.message || "Preview stopped — Start live preview to resume.";
+    } else if (v.status === "running") {
+      revealPreview();
     }
   }
 
@@ -787,10 +989,20 @@ export default function DLSS5LiveImage(container, props) {
     leaveFull();
     document.removeEventListener("fullscreenchange", onFsChange);
     document.removeEventListener("pointerup", onDocPointerUp, true);
+    if (stageRO) {
+      stageRO.disconnect();
+      stageRO = null;
+    } else {
+      window.removeEventListener("resize", applyView);
+    }
     if (cmdTimer) clearTimeout(cmdTimer);
     cmdTimer = null;
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = null;
+    if (progressHideTimer) {
+      clearTimeout(progressHideTimer);
+      progressHideTimer = null;
+    }
     disconnectStream();
   }
 

@@ -2,8 +2,8 @@
 
 Reuses ``LiveServer`` from :mod:`dlss5_live_server` (same /frame.jpg, /state, /cmd, CORS).
 A single background thread re-evaluates the still whenever look settings change; upscale /
-model_preset hot-swap the worker. There is no playback loop - the composed frame is
-republished whenever the result changes.
+model_preset hot-swap the worker. There is no playback loop - the DLSS result is
+republished whenever the look changes. Wipe / before / split are composed in the widget.
 """
 
 from __future__ import annotations
@@ -21,18 +21,11 @@ try:
 except ImportError:  # pragma: no cover
     cv2 = None
 
-from dlss5_live_bridge import LIVE_FIELDS, NativeLiveWorker, NativeRuntime, needs_restart
-from dlss5_live_server import (
-    VIEW_AFTER,
-    VIEW_BEFORE,
-    VIEW_SPLIT,
-    VIEW_WIPE,
-    VIEWS,
-    LiveServer,
-)
+from dlss5_live_bridge import NativeLiveWorker, NativeRuntime, needs_restart
+from dlss5_live_server import VIEW_WIPE, VIEWS, LiveServer
 from dlss5_worker_bridge import MV_MODE_NONE, DLSS5Settings, DLSS5WorkerError
 
-DEFAULT_PREVIEW_WIDTH = 1280
+DEFAULT_PREVIEW_WIDTH = 0  # 0 = match the still (full-resolution JPEG stream)
 IDLE_PAUSE_SECONDS = 30.0
 DEBOUNCE_MS = 5.0  # coalesce rapid slider drags into one evaluate (the evaluate itself paces us)
 
@@ -56,7 +49,7 @@ class LiveImageSession:
         self.source = np.ascontiguousarray(source_rgb[:, :, :3], dtype=np.uint8)
         self.height, self.width = self.source.shape[:2]
         self.runtime = runtime
-        self.preview_max_width = max(320, int(preview_width))
+        self.preview_max_width = int(preview_width)
         self._log = log or (lambda _m: None)
         self._on_state = on_state
         self._alive = node_alive or (lambda: True)
@@ -78,6 +71,7 @@ class LiveImageSession:
         self.error: str | None = None
         self.running = False
         self.seq = 0
+        self.busy = False
         self._source_jpeg: bytes | None = None
 
         self.server = LiveServer(on_command=self._command, get_state=self.state)
@@ -102,13 +96,15 @@ class LiveImageSession:
         return base
 
     def stop(self) -> None:
+        self.running = False
+        self.busy = False
+        self.message = "stopped"
         self._stop.set()
         self._wake.set()
         if self._thread is not None:
             self._thread.join(timeout=8.0)
             self._thread = None
         self.server.stop()
-        self.running = False
 
     def update_settings(self, settings: DLSS5Settings) -> None:
         wanted = replace(settings, mv_mode=MV_MODE_NONE, intensity=1.0)
@@ -138,6 +134,7 @@ class LiveImageSession:
             "view": self._view,
             "wipe": round(self._wipe, 3),
             "seq": self.seq,
+            "busy": self.busy,
             "look": {
                 "nr_style": s.nr_style,
                 "nr_preset": s.nr_preset,
@@ -153,16 +150,13 @@ class LiveImageSession:
     # ------------------------------------------------------------------ cmds
 
     def _command(self, args: dict[str, str]) -> None:
-        changed = False
         if "wipe" in args:
             try:
                 self._wipe = min(1.0, max(0.0, float(args["wipe"])))
-                changed = True
             except ValueError:
                 pass
         if "view" in args and args["view"] in VIEWS:
             self._view = args["view"]
-            changed = True
         # Per-frame look fields from the widget (bypass the node round-trip).
         live_updates: dict[str, Any] = {}
         if "nr_style" in args:
@@ -185,11 +179,7 @@ class LiveImageSession:
                 self._settings = replace(self._settings, **live_updates, **restart_updates)
                 self._dirty = True
             self._wake.set()
-            return
-        if changed:
-            # Recompose without re-running the worker (wipe/view only).
-            self._publish_current()
-            self._emit_state()
+        # View/wipe are composed in the widget from /source.jpg + the DLSS stream.
 
     # ------------------------------------------------------------------ loop
 
@@ -241,6 +231,7 @@ class LiveImageSession:
 
                 worker = self._worker
                 assert worker is not None
+                self.busy = True
                 if needs_restart(worker.settings, wanted):
                     self._log(f"Hot-swapping worker for {wanted.upscale_mode} / preset {wanted.model_preset}...\n")
                     self._close_worker(worker)
@@ -267,16 +258,21 @@ class LiveImageSession:
                         self._worker = self._start_worker(wanted)
                     self._wake.wait(0.5)
                     self._wake.clear()
+                    self.busy = False
                     continue
 
                 self._publish_current()
+                self.busy = False
                 self._emit_state()
         except Exception as exc:  # noqa: BLE001 - surfaces in the widget
             self.error = str(exc)
             self.message = "error"
             self._log(f"Live image session crashed: {exc}\n")
+            self.busy = False
             self._emit_state()
         finally:
+            self.busy = False
+            self.running = False
             self._close_worker(self._worker)
             self._worker = None
             self.message = "stopped"
@@ -300,7 +296,7 @@ class LiveImageSession:
             with contextlib.suppress(Exception):
                 worker.close()
 
-    def _encode_jpeg(self, rgb: np.ndarray, quality: int = 82) -> bytes:
+    def _encode_jpeg(self, rgb: np.ndarray, quality: int = 95) -> bytes:
         assert cv2 is not None
         frame = self._shrink(rgb)
         ok, buf = cv2.imencode(
@@ -316,7 +312,7 @@ class LiveImageSession:
         if cv2 is None:
             return
         try:
-            self._source_jpeg = self._encode_jpeg(self.source, quality=86)
+            self._source_jpeg = self._encode_jpeg(self.source, quality=95)
             self.server.files["/source.jpg"] = self._source_jpeg
         except Exception:  # noqa: BLE001
             self._source_jpeg = None
@@ -327,12 +323,8 @@ class LiveImageSession:
         t0 = time.perf_counter()
         if self._source_jpeg is None:
             self._publish_source()
-        if self._view == VIEW_SPLIT:
-            # Side by side: the stream carries the DLSS result alone; the widget shows the
-            # static /source.jpg next to it (both full frames, nothing cropped).
-            jpeg = self._encode_jpeg(self._out, quality=88)
-        else:
-            jpeg = self._compose(self.source, self._out)
+        # Stream is always the DLSS result at preview cap (0 = native image size).
+        jpeg = self._encode_jpeg(self._out, quality=95)
         self.encode_ms = (time.perf_counter() - t0) * 1000
         self.server.broadcast.publish(jpeg)
         self.seq += 1
@@ -345,34 +337,11 @@ class LiveImageSession:
     def _shrink(self, img: np.ndarray) -> np.ndarray:
         assert cv2 is not None
         h, w = img.shape[:2]
-        if w <= self.preview_max_width:
+        cap = self.preview_max_width
+        if cap <= 0 or w <= cap:
             return img
-        scale = self.preview_max_width / w
-        return cv2.resize(img, (self.preview_max_width, max(1, int(round(h * scale)))), interpolation=cv2.INTER_AREA)
-
-    def _compose(self, src: np.ndarray, out: np.ndarray) -> bytes:
-        assert cv2 is not None
-        a = self._shrink(src)
-        b = self._shrink(out)
-        if a.shape[:2] != b.shape[:2]:
-            b = cv2.resize(b, (a.shape[1], a.shape[0]), interpolation=cv2.INTER_AREA)
-        view = self._view
-        if view == VIEW_BEFORE:
-            frame = a
-        elif view == VIEW_AFTER:
-            frame = b
-        elif view == VIEW_SPLIT:
-            # Both full images, uncropped, placed left/right (widget prefers /source.jpg + /after.jpg).
-            frame = np.concatenate([a, b], axis=1)
-        else:  # wipe
-            mid = int(round(self._wipe * a.shape[1]))
-            frame = a.copy()
-            frame[:, mid:] = b[:, mid:]
-            cv2.line(frame, (mid, 0), (mid, frame.shape[0] - 1), (255, 255, 255), 1, cv2.LINE_AA)
-        ok, buf = cv2.imencode(".jpg", cv2.cvtColor(frame, cv2.COLOR_RGB2BGR), [int(cv2.IMWRITE_JPEG_QUALITY), 88])
-        if not ok:
-            raise RuntimeError("JPEG encode failed")
-        return buf.tobytes()
+        scale = cap / w
+        return cv2.resize(img, (cap, max(1, int(round(h * scale)))), interpolation=cv2.INTER_AREA)
 
 
 __all__ = ["DEFAULT_PREVIEW_WIDTH", "LiveImageSession"]

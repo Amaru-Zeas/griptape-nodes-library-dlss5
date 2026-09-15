@@ -83,6 +83,10 @@ class _Broadcast:
         with self._cond:
             return self._jpeg
 
+    def snapshot(self) -> tuple[bytes, int]:
+        with self._cond:
+            return self._jpeg, self._seq
+
     def wait_next(self, seq: int, timeout: float) -> tuple[bytes, int] | None:
         self.last_pull = time.monotonic()  # a waiting client counts as a viewer (wakes an idle loop)
         with self._cond:
@@ -142,20 +146,40 @@ class LiveServer:
                     self.send_header("Content-Type", f"multipart/x-mixed-replace; boundary={BOUNDARY.decode()}")
                     self.send_header("Connection", "close")
                     self.end_headers()
+
+                    def write_part(jpeg: bytes) -> None:
+                        self.wfile.write(
+                            b"--" + BOUNDARY + b"\r\nContent-Type: image/jpeg\r\nContent-Length: "
+                            + str(len(jpeg)).encode() + b"\r\n\r\n" + jpeg + b"\r\n"
+                        )
+                        self.wfile.flush()
+
                     seq = -1
+                    primed = False
                     try:
+                        # Chromium <img> multipart often ignores the first JPEG part and
+                        # will sit blank until a later one arrives (a Style/slider change).
+                        latest, seq_now = server.broadcast.snapshot()
+                        if latest:
+                            write_part(latest)
+                            write_part(latest)
+                            seq = seq_now
+                            primed = True
                         while True:
                             got = server.broadcast.wait_next(seq, timeout=1.0)
                             if got is None:
-                                continue  # keep-alive by waiting; nothing new yet
+                                keep, keep_seq = server.broadcast.snapshot()
+                                if keep:
+                                    write_part(keep)
+                                    seq = keep_seq
+                                continue
                             jpeg, seq = got
                             if not jpeg:
                                 continue
-                            self.wfile.write(
-                                b"--" + BOUNDARY + b"\r\nContent-Type: image/jpeg\r\nContent-Length: "
-                                + str(len(jpeg)).encode() + b"\r\n\r\n" + jpeg + b"\r\n"
-                            )
-                            self.wfile.flush()
+                            write_part(jpeg)
+                            if not primed:
+                                write_part(jpeg)
+                                primed = True
                     except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError, OSError):
                         return
                 elif path == "/frame.jpg":
