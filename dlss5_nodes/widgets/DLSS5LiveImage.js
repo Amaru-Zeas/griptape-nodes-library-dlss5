@@ -3,11 +3,14 @@
 // Visual language matches Shot Planner / Seedance / Omni Image widgets:
 // dark gray chrome (#0c0e11), muted amber accent (#d9c6a4 / #a58050), ui-monospace.
 //
-// Left: before/after wipe. Right: look controls.
-// Sliders hit /cmd while dragging; onChange syncs on release.
-// Full screen shows only this landscape (preview + controls).
+// Left: before/after wipe, or both full stills side by side. Right: look controls.
+// The picture is the session's MJPEG stream (frames arrive as soon as the GPU has
+// them - no polling, no per-frame engine traffic). Sliders hit /cmd while dragging;
+// onChange syncs the node once on release. Full screen shows only this landscape.
 
-const POLL_MS = 250;
+const STATE_POLL_MS = 500; // HUD only (message / size / ms)
+const CMD_MS = 16;
+const FULL_SCALE = 1.2;
 
 // Shot Planner V2 palette (same as SeedanceMasterWidget / ImageGenPromptWidget).
 const FONT = "ui-monospace,'Cascadia Code','JetBrains Mono',Consolas,monospace";
@@ -45,6 +48,9 @@ const UPSCALE = [
   "3.0x (Ultra Performance)",
 ];
 const PRESETS = ["Default", "J", "K", "L", "M"];
+
+const IMG_FULL = "display:block;width:100%;height:100%;object-fit:contain;pointer-events:none;";
+const IMG_HALF = "display:block;flex:1 1 0;min-width:0;width:50%;height:100%;object-fit:contain;pointer-events:none;";
 
 function el(tag, css, text) {
   const e = document.createElement(tag);
@@ -101,7 +107,13 @@ function mkSlider(min, max, step, value) {
   });
   row.append(input, num);
   row._input = input;
+  row._num = num;
   return row;
+}
+
+function setSlider(row, value) {
+  row._input.value = String(value);
+  row._num.textContent = Number(value).toFixed(2);
 }
 
 function mkCheck(label, checked) {
@@ -120,18 +132,30 @@ function mkCheck(label, checked) {
 }
 
 function mkBtn(label, title, { accent = false } = {}) {
+  const idleBorder = accent ? C.accentBorder : C.inputBorder;
+  const idleBg = accent ? C.accentBg : C.chipBg;
+  const idleFg = accent ? C.accent : C.text;
   const b = stopDrag(
     el(
       "button",
-      accent
-        ? `padding:6px 10px;border-radius:6px;border:1px solid ${C.accentBorder};background:${C.accentBg};` +
-          `color:${C.accent};font:11.5px/1.3 ${FONT};font-weight:600;cursor:pointer;width:100%;`
-        : `padding:6px 10px;border-radius:6px;border:1px solid ${C.inputBorder};background:${C.chipBg};` +
-          `color:${C.text};font:11.5px/1.3 ${FONT};cursor:pointer;width:100%;`,
+      `padding:6px 10px;border-radius:6px;border:1px solid ${idleBorder};background:${idleBg};` +
+        `color:${idleFg};font:11.5px/1.3 ${FONT};${accent ? "font-weight:600;" : ""}cursor:pointer;width:100%;` +
+        `transition:background-color .12s ease,border-color .12s ease,color .12s ease,filter .12s ease;`,
       label,
     ),
   );
   if (title) b.title = title;
+  b.addEventListener("mouseenter", () => {
+    if (b.disabled) return;
+    b.style.filter = "brightness(1.28)";
+    b.style.borderColor = C.accentBorder;
+    b.style.color = C.accent;
+  });
+  b.addEventListener("mouseleave", () => {
+    b.style.filter = "";
+    b.style.borderColor = idleBorder;
+    b.style.color = idleFg;
+  });
   return b;
 }
 
@@ -145,13 +169,17 @@ export default function DLSS5LiveImage(container, props) {
   let latestProps = props;
   let url = "";
   let pollTimer = null;
+  let firstFrameTimer = null;
+  let retryTimer = null;
   let wiping = false;
   let sliding = false;
   let emitting = false;
-  let lastSeq = -1;
+  let lastEmitKey = "";
   let fullscreen = false;
   let cmdTimer = null;
   let pendingCmd = null;
+  let sourceLoadedFor = "";
+  let liveStatus = "stopped";
   let settings = {
     look: "Ultra (max realism)",
     local_tone: 1.0,
@@ -180,35 +208,40 @@ export default function DLSS5LiveImage(container, props) {
   const stage = el(
     "div",
     `position:relative;flex:1 1 62%;min-width:220px;min-height:280px;background:${C.stageBg};border:1px solid ${C.rootBorder};` +
-      `border-radius:8px;overflow:hidden;display:flex;align-items:center;justify-content:center;cursor:col-resize;user-select:none;`,
+      `border-radius:8px;overflow:hidden;display:flex;align-items:center;justify-content:center;cursor:col-resize;` +
+      `user-select:none;box-sizing:border-box;`,
   );
-  const img = el("img", "display:none;width:100%;height:100%;object-fit:contain;pointer-events:none;");
+  const imgSrc = el("img", "display:none;"); // static source still (side by side only)
+  const img = el("img", IMG_FULL); // MJPEG stream: wipe / after / before, or the DLSS half of side by side
+  imgSrc.draggable = false;
   img.draggable = false;
+  imgSrc.alt = "";
+  img.alt = "";
   const placeholder = el(
     "div",
     `position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;` +
-      `padding:24px;color:${C.muted};font:12.5px/1.5 ${FONT};pointer-events:none;`,
+      `padding:24px;color:${C.muted};font:12.5px/1.5 ${FONT};pointer-events:none;z-index:3;`,
     "Connect an image — live preview starts automatically.",
   );
   const badgeL = el(
     "div",
     `position:absolute;left:8px;top:8px;padding:2px 7px;border-radius:5px;border:1px solid ${C.inputBorder};` +
-      `background:${C.chipBg};color:${C.label};font:10.5px/1.4 ${FONT};pointer-events:none;`,
+      `background:${C.chipBg};color:${C.label};font:10.5px/1.4 ${FONT};pointer-events:none;z-index:2;`,
     "BEFORE",
   );
   const badgeR = el(
     "div",
     `position:absolute;right:8px;top:8px;padding:2px 7px;border-radius:5px;border:1px solid ${C.accentBorder};` +
-      `background:${C.accentBg};color:${C.accent};font:10.5px/1.4 ${FONT};pointer-events:none;`,
+      `background:${C.accentBg};color:${C.accent};font:10.5px/1.4 ${FONT};pointer-events:none;z-index:2;`,
     "DLSS 5",
   );
   const hud = el(
     "div",
     `position:absolute;left:8px;bottom:8px;padding:2px 7px;border-radius:5px;border:1px solid ${C.rootBorder};` +
-      `background:rgba(12,14,17,.85);color:${C.muted};font:10.5px/1.4 ${FONT};pointer-events:none;white-space:pre;`,
+      `background:rgba(12,14,17,.85);color:${C.muted};font:10.5px/1.4 ${FONT};pointer-events:none;white-space:pre;z-index:2;`,
     "",
   );
-  stage.append(img, placeholder, badgeL, badgeR, hud);
+  stage.append(imgSrc, img, placeholder, badgeL, badgeR, hud);
 
   const panel = el(
     "div",
@@ -228,7 +261,7 @@ export default function DLSS5LiveImage(container, props) {
       ["wipe", "Wipe (drag)"],
       ["after", "DLSS 5 only"],
       ["before", "Source only"],
-      ["split", "Side by side"],
+      ["split", "Side by side (full)"],
     ],
     settings.view,
   );
@@ -236,7 +269,7 @@ export default function DLSS5LiveImage(container, props) {
   const structure = mkSlider(0, 2, 0.01, settings.local_structure);
   const skin = mkSlider(-1, 2, 0.01, settings.skin_structure);
   const mask = mkCheck("Auto mask (skin)", settings.auto_mask);
-  const restartBtn = mkBtn("↻  Restart live preview", "Restart the resident worker on the current image");
+  const restartBtn = mkBtn("▶  Start live preview", "Start the resident worker on the current image");
   const stopBtn = mkBtn("■  Stop live preview", "Stop the worker and free the GPU");
   const fullBtn = mkBtn("⛶  Full screen", "Full screen preview + controls (Esc to leave)");
   const closeBtn = mkBtn("✕  Close full screen", "Leave full screen (Esc)", { accent: true });
@@ -268,28 +301,37 @@ export default function DLSS5LiveImage(container, props) {
   wrapper.append(body);
   container.appendChild(wrapper);
 
+  // ── full screen ─────────────────────────────────────────────────────────
+  // The overlay itself is left unscaled (the :fullscreen UA rules force it to
+  // 100% / transform:none). A child "scaler" is laid out at 1/FULL_SCALE and
+  // transformed up, so the UI is 20% larger while pointer hit-testing stays exact.
+  // (CSS `zoom` was used before; Chromium's range slider tracks the pointer in
+  // un-zoomed coordinates, which is why the thumb sat off from where you grabbed.)
   const overlay = el(
     "div",
-    `position:fixed;inset:0;z-index:2147483000;background:${C.rootBg};display:none;flex-direction:column;` +
-      `padding:12px;box-sizing:border-box;font-family:${FONT};color:${C.text};`,
+    `position:fixed;inset:0;z-index:2147483000;background:${C.rootBg};display:none;overflow:hidden;` +
+      `font-family:${FONT};color:${C.text};`,
   );
   overlay.className = "nodrag nowheel";
   overlay.tabIndex = 0;
+  const scaler = el(
+    "div",
+    `width:${(100 / FULL_SCALE).toFixed(4)}%;height:${(100 / FULL_SCALE).toFixed(4)}%;` +
+      `transform:scale(${FULL_SCALE});transform-origin:0 0;display:flex;flex-direction:column;` +
+      `padding:12px;box-sizing:border-box;`,
+  );
+  scaler.className = "nodrag nowheel";
+  overlay.append(scaler);
 
   function enterFull() {
     if (fullscreen) return;
     fullscreen = true;
     document.body.appendChild(overlay);
-    overlay.append(body);
-    overlay.style.display = "flex";
-    overlay.style.inset = "0 auto auto 0";
-    overlay.style.width = "83.333%";
-    overlay.style.height = "83.333%";
-    overlay.style.zoom = "1.2";
+    scaler.append(body);
+    overlay.style.display = "block";
     body.style.flex = "1 1 auto";
     body.style.minHeight = "0";
     body.style.height = "100%";
-    stage.style.borderRadius = "8px";
     panel.style.maxWidth = "380px";
     panel.style.flex = "0 0 380px";
     panel.style.width = "380px";
@@ -311,7 +353,6 @@ export default function DLSS5LiveImage(container, props) {
     body.style.flex = "";
     body.style.minHeight = "320px";
     body.style.height = "";
-    overlay.style.zoom = "";
     panel.style.maxWidth = "42%";
     panel.style.flex = "0 0 280px";
     panel.style.width = "280px";
@@ -332,10 +373,41 @@ export default function DLSS5LiveImage(container, props) {
   fullBtn.addEventListener("click", enterFull);
   closeBtn.addEventListener("click", leaveFull);
 
+  // ── view layout ─────────────────────────────────────────────────────────
+  function isSplit() {
+    return settings.view === "split";
+  }
+
+  function loadSource() {
+    if (!url || sourceLoadedFor === url) return;
+    sourceLoadedFor = url;
+    imgSrc.src = `${url}/source.jpg?t=${Date.now()}`;
+  }
+
+  function applyView() {
+    const split = isSplit();
+    if (split) {
+      stage.style.gap = "6px";
+      stage.style.padding = "6px";
+      imgSrc.style.cssText = IMG_HALF;
+      img.style.cssText = IMG_HALF;
+      loadSource();
+    } else {
+      stage.style.gap = "0";
+      stage.style.padding = "0";
+      imgSrc.style.cssText = "display:none;";
+      img.style.cssText = IMG_FULL;
+    }
+    badgeL.hidden = settings.view === "after";
+    badgeR.hidden = settings.view === "before";
+    stage.style.cursor = settings.view === "wipe" ? "col-resize" : "default";
+  }
+
+  // ── server I/O ──────────────────────────────────────────────────────────
   function cmd(params) {
     if (!url) return;
     const q = new URLSearchParams(params).toString();
-    fetch(`${url}/cmd?${q}`).catch(() => {});
+    fetch(`${url}/cmd?${q}`, { cache: "no-store" }).catch(() => {});
   }
 
   function cmdSoon(params) {
@@ -346,39 +418,172 @@ export default function DLSS5LiveImage(container, props) {
       const next = pendingCmd;
       pendingCmd = null;
       if (next) cmd(next);
-    }, 80);
+    }, CMD_MS);
   }
 
-  function refreshFrame() {
-    if (!url || sliding) return;
-    img.src = `${url}/frame.jpg?t=${Date.now()}`;
+  function flushCmd() {
+    if (cmdTimer) {
+      clearTimeout(cmdTimer);
+      cmdTimer = null;
+    }
+    if (pendingCmd) {
+      const next = pendingCmd;
+      pendingCmd = null;
+      cmd(next);
+    }
   }
 
   function showImage() {
-    img.style.display = "block";
     placeholder.style.display = "none";
+    if (firstFrameTimer) {
+      clearInterval(firstFrameTimer);
+      firstFrameTimer = null;
+    }
+  }
+
+  function connectStream() {
+    if (!url) return;
+    img.src = `${url}/stream.mjpg?t=${Date.now()}`;
+    if (firstFrameTimer) clearInterval(firstFrameTimer);
+    // Chromium does not reliably fire `load` for multipart streams: watch for pixels.
+    firstFrameTimer = setInterval(() => {
+      if (img.naturalWidth > 0) showImage();
+    }, 100);
+  }
+
+  function disconnectStream() {
+    if (firstFrameTimer) {
+      clearInterval(firstFrameTimer);
+      firstFrameTimer = null;
+    }
+    if (retryTimer) {
+      clearTimeout(retryTimer);
+      retryTimer = null;
+    }
+    img.removeAttribute("src");
+    imgSrc.removeAttribute("src");
+    sourceLoadedFor = "";
+  }
+
+  img.addEventListener("load", showImage);
+  img.addEventListener("error", () => {
+    // Stream dropped (worker restart, server gone). Retry while the node still says running.
+    if (!url || retryTimer) return;
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      if (url) connectStream();
+    }, 1000);
+  });
+
+  function poll() {
+    if (!url) return;
+    fetch(`${url}/state`, { cache: "no-store" })
+      .then((r) => r.json())
+      .then((st) => {
+        const ms = st.worker_ms != null ? `${st.worker_ms.toFixed?.(1) ?? st.worker_ms} ms` : "";
+        const size = st.out_width ? `${st.out_width}×${st.out_height}` : "";
+        hud.textContent = [st.message || "", size, ms].filter(Boolean).join("  ·  ");
+        if (st.error) {
+          placeholder.textContent = st.error;
+          placeholder.style.display = "flex";
+        } else if (img.naturalWidth > 0) {
+          showImage();
+        }
+      })
+      .catch(() => {});
+  }
+
+  function setUrl(next) {
+    if (next === url) return;
+    url = next || "";
+    if (pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+    disconnectStream();
+    if (url) {
+      placeholder.textContent = "Starting DLSS 5…";
+      placeholder.style.display = "flex";
+      connectStream();
+      if (isSplit()) loadSource();
+      poll();
+      pollTimer = setInterval(poll, STATE_POLL_MS);
+    } else {
+      placeholder.style.display = "flex";
+      placeholder.textContent =
+        liveStatus === "stopped"
+          ? "Preview stopped — Start live preview to resume."
+          : "Connect an image — live preview starts automatically.";
+      hud.textContent = "";
+    }
+  }
+
+  // ── node sync ───────────────────────────────────────────────────────────
+  function syncTransport(status) {
+    liveStatus = status || liveStatus;
+    const running = liveStatus === "running";
+    restartBtn.textContent = running ? "↻  Restart live preview" : "▶  Start live preview";
+    restartBtn.title = running
+      ? "Restart the resident worker on the current image"
+      : "Start the resident worker on the current image";
+    stopBtn.disabled = !running;
+    stopBtn.style.opacity = running ? "1" : "0.45";
+    stopBtn.style.cursor = running ? "pointer" : "default";
+  }
+
+  function payload(extra) {
+    return {
+      status: latestProps.value?.status || liveStatus || "running",
+      url: url || latestProps.value?.url || "",
+      message: latestProps.value?.message || "",
+      look: settings.look,
+      local_tone: settings.local_tone,
+      local_structure: settings.local_structure,
+      skin_structure: settings.skin_structure,
+      auto_mask: settings.auto_mask,
+      nr_style: settings.nr_style,
+      upscale_mode: settings.upscale_mode,
+      model_preset: settings.model_preset,
+      view: settings.view,
+      wipe: settings.wipe,
+      _fromWidget: true,
+      ...(extra || {}),
+    };
+  }
+
+  function lookKey() {
+    return JSON.stringify([
+      settings.look,
+      settings.local_tone,
+      settings.local_structure,
+      settings.skin_structure,
+      settings.auto_mask,
+      settings.nr_style,
+      settings.upscale_mode,
+      settings.model_preset,
+      settings.view,
+      Math.round(settings.wipe * 1000),
+    ]);
   }
 
   function emitSettings() {
     if (!onChange || emitting) return;
+    const key = lookKey();
+    if (key === lastEmitKey) return; // change + pointerup both fire on release; sync once
+    lastEmitKey = key;
     emitting = true;
     try {
-      onChange({
-        status: latestProps.value?.status || "running",
-        url: url || latestProps.value?.url || "",
-        message: latestProps.value?.message || "",
-        look: settings.look,
-        local_tone: settings.local_tone,
-        local_structure: settings.local_structure,
-        skin_structure: settings.skin_structure,
-        auto_mask: settings.auto_mask,
-        nr_style: settings.nr_style,
-        upscale_mode: settings.upscale_mode,
-        model_preset: settings.model_preset,
-        view: settings.view,
-        wipe: settings.wipe,
-        _fromWidget: true,
-      });
+      onChange(payload());
+    } finally {
+      emitting = false;
+    }
+  }
+
+  function emitAction(action) {
+    if (!onChange || emitting) return;
+    emitting = true;
+    try {
+      onChange(payload({ _action: action }));
     } finally {
       emitting = false;
     }
@@ -393,54 +598,20 @@ export default function DLSS5LiveImage(container, props) {
     settings.local_structure = p.local_structure;
     settings.skin_structure = p.skin_structure;
     settings.auto_mask = p.auto_mask;
-    tone._input.value = String(p.local_tone);
-    tone.querySelector("span").textContent = p.local_tone.toFixed(2);
-    structure._input.value = String(p.local_structure);
-    structure.querySelector("span").textContent = p.local_structure.toFixed(2);
-    skin._input.value = String(p.skin_structure);
-    skin.querySelector("span").textContent = p.skin_structure.toFixed(2);
+    setSlider(tone, p.local_tone);
+    setSlider(structure, p.local_structure);
+    setSlider(skin, p.skin_structure);
     mask._input.checked = !!p.auto_mask;
   }
 
-  function emitAction(action) {
-    if (!onChange || emitting) return;
-    emitting = true;
-    try {
-      onChange({
-        status: latestProps.value?.status || "running",
-        url: url || latestProps.value?.url || "",
-        message: latestProps.value?.message || "",
-        look: settings.look,
-        local_tone: settings.local_tone,
-        local_structure: settings.local_structure,
-        skin_structure: settings.skin_structure,
-        auto_mask: settings.auto_mask,
-        nr_style: settings.nr_style,
-        upscale_mode: settings.upscale_mode,
-        model_preset: settings.model_preset,
-        view: settings.view,
-        wipe: settings.wipe,
-        _fromWidget: true,
-        _action: action,
-      });
-    } finally {
-      emitting = false;
-    }
-  }
-
-  function pushLiveCmd(extra) {
+  function pushLive() {
     cmdSoon({
       local_tone: settings.local_tone,
       local_structure: settings.local_structure,
       skin_structure: settings.skin_structure,
       auto_mask: settings.auto_mask ? 1 : 0,
       nr_style: settings.nr_style,
-      ...(extra || {}),
     });
-  }
-
-  function pushLive() {
-    pushLiveCmd();
     emitSettings();
   }
 
@@ -461,20 +632,12 @@ export default function DLSS5LiveImage(container, props) {
       markCustom();
       const one = {};
       one[key] = settings[key];
-      cmdSoon(one); // GPU only, throttled; don't decode a new JPEG until release
+      cmdSoon(one); // GPU only; the node hears about it once, on release
     });
     const commit = () => {
       sliding = false;
       settings[key] = Number(input.value);
-      if (pendingCmd) {
-        cmd(pendingCmd);
-        pendingCmd = null;
-      }
-      if (cmdTimer) {
-        clearTimeout(cmdTimer);
-        cmdTimer = null;
-      }
-      refreshFrame();
+      flushCmd();
       emitSettings();
     };
     input.addEventListener("change", commit);
@@ -484,6 +647,13 @@ export default function DLSS5LiveImage(container, props) {
       if (e.key === "ArrowLeft" || e.key === "ArrowRight" || e.key === "Home" || e.key === "End") commit();
     });
   }
+  const onDocPointerUp = () => {
+    if (!sliding) return;
+    sliding = false; // released outside the slider: still sync once
+    flushCmd();
+    emitSettings();
+  };
+  document.addEventListener("pointerup", onDocPointerUp, true);
 
   lookSel.addEventListener("change", () => {
     applyLookPreset(lookSel.value);
@@ -505,11 +675,15 @@ export default function DLSS5LiveImage(container, props) {
     emitSettings();
   });
   restartBtn.addEventListener("click", () => emitAction("restart"));
-  stopBtn.addEventListener("click", () => emitAction("stop"));
+  stopBtn.addEventListener("click", () => {
+    if (stopBtn.disabled) return;
+    emitAction("stop");
+  });
   viewSel.addEventListener("change", () => {
     settings.view = viewSel.value;
+    applyView();
     cmd({ view: settings.view });
-    emitSettings();
+    emitSettings(); // node widens / restores the canvas width for side by side
   });
   bindSlider(tone, "local_tone");
   bindSlider(structure, "local_structure");
@@ -520,17 +694,15 @@ export default function DLSS5LiveImage(container, props) {
     pushLive();
   });
 
+  // ── wipe ────────────────────────────────────────────────────────────────
   function wipeAt(clientX) {
     const r = stage.getBoundingClientRect();
     const x = Math.min(1, Math.max(0, (clientX - r.left) / Math.max(1, r.width)));
     settings.wipe = x;
-    cmd({ wipe: x, view: "wipe" });
-    if (settings.view !== "wipe") {
-      settings.view = "wipe";
-      viewSel.value = "wipe";
-    }
+    cmdSoon({ wipe: x.toFixed(4), view: "wipe" });
   }
   stage.addEventListener("pointerdown", (e) => {
+    if (settings.view !== "wipe") return;
     e.stopPropagation();
     wiping = true;
     stage.setPointerCapture?.(e.pointerId);
@@ -543,53 +715,16 @@ export default function DLSS5LiveImage(container, props) {
   const endWipe = () => {
     if (!wiping) return;
     wiping = false;
+    flushCmd();
     emitSettings();
   };
   stage.addEventListener("pointerup", endWipe);
   stage.addEventListener("pointercancel", endWipe);
 
-  img.addEventListener("load", showImage);
-
-  function poll() {
-    if (!url) return;
-    fetch(`${url}/state`)
-      .then((r) => r.json())
-      .then((st) => {
-        const ms = st.worker_ms != null ? `${st.worker_ms.toFixed?.(1) ?? st.worker_ms} ms` : "";
-        const size = st.out_width ? `${st.out_width}×${st.out_height}` : "";
-        hud.textContent = [st.message || "", size, ms].filter(Boolean).join("  ·  ");
-        if (st.error) placeholder.textContent = st.error;
-        if (typeof st.seq === "number" && st.seq !== lastSeq) {
-          lastSeq = st.seq;
-          if (!sliding) refreshFrame();
-        }
-      })
-      .catch(() => {});
-  }
-
-  function setUrl(next) {
-    if (next === url) return;
-    url = next || "";
-    lastSeq = -1;
-    if (pollTimer) {
-      clearInterval(pollTimer);
-      pollTimer = null;
-    }
-    if (url) {
-      placeholder.textContent = "Starting DLSS 5…";
-      refreshFrame();
-      poll();
-      pollTimer = setInterval(poll, POLL_MS);
-    } else {
-      img.style.display = "none";
-      placeholder.style.display = "flex";
-      placeholder.textContent = "Connect an image — live preview starts automatically.";
-      hud.textContent = "";
-    }
-  }
-
+  // ── props ───────────────────────────────────────────────────────────────
   function syncControls(v) {
     if (!v || v._fromWidget) return;
+    if (sliding || wiping) return; // never fight an active drag
     const keys = [
       "look",
       "local_tone",
@@ -603,8 +738,10 @@ export default function DLSS5LiveImage(container, props) {
       "wipe",
     ];
     let changed = false;
+    let viewChanged = false;
     for (const k of keys) {
       if (v[k] !== undefined && v[k] !== settings[k]) {
+        if (k === "view") viewChanged = true;
         settings[k] = v[k];
         changed = true;
       }
@@ -615,37 +752,42 @@ export default function DLSS5LiveImage(container, props) {
     upscaleSel.value = settings.upscale_mode;
     presetSel.value = settings.model_preset;
     viewSel.value = settings.view;
-    tone._input.value = String(settings.local_tone);
-    tone.querySelector("span").textContent = Number(settings.local_tone).toFixed(2);
-    structure._input.value = String(settings.local_structure);
-    structure.querySelector("span").textContent = Number(settings.local_structure).toFixed(2);
-    skin._input.value = String(settings.skin_structure);
-    skin.querySelector("span").textContent = Number(settings.skin_structure).toFixed(2);
+    setSlider(tone, settings.local_tone);
+    setSlider(structure, settings.local_structure);
+    setSlider(skin, settings.skin_structure);
     mask._input.checked = !!settings.auto_mask;
+    lastEmitKey = lookKey();
+    if (viewChanged) applyView();
   }
 
   function update(nextProps) {
     latestProps = nextProps;
     onChange = nextProps.onChange;
     const v = nextProps.value || {};
+    if (v.status) syncTransport(v.status);
     syncControls(v);
+    setUrl(v.url || "");
     if (v.status === "error" && v.message) {
       placeholder.style.display = "flex";
       placeholder.textContent = v.message;
+    } else if (v.status === "stopped" && !v.url) {
+      placeholder.style.display = "flex";
+      placeholder.textContent = v.message || "Preview stopped — Start live preview to resume.";
     }
-    setUrl(v.url || "");
   }
 
   function cleanup() {
     leaveFull();
     document.removeEventListener("fullscreenchange", onFsChange);
+    document.removeEventListener("pointerup", onDocPointerUp, true);
     if (cmdTimer) clearTimeout(cmdTimer);
     cmdTimer = null;
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = null;
-    img.src = "";
+    disconnectStream();
   }
 
+  applyView();
   update(props);
   container._dlss5LiveImg = { wrapper, update, cleanup };
   return { cleanup, update };

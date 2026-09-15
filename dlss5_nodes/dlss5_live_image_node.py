@@ -27,6 +27,7 @@ from griptape_nodes.exe_types.param_components.project_file_parameter import Pro
 from griptape_nodes.exe_types.param_types.parameter_button import ParameterButton
 from griptape_nodes.exe_types.param_types.parameter_dict import ParameterDict
 from griptape_nodes.files.project_file import ProjectFileDestination
+from griptape_nodes.retained_mode.events.node_events import SetNodeMetadataRequest
 from griptape_nodes.retained_mode.griptape_nodes import GriptapeNodes
 from griptape_nodes.traits.options import Options
 from griptape_nodes.traits.widget import Widget
@@ -84,6 +85,12 @@ DEFAULT_LIVE = {
 }
 
 DEFAULT_OUTPUT_FILENAME = "dlss5_live.png"
+NODE_WIDTH_NORMAL = 860
+NODE_WIDTH_SPLIT = 1340
+NODE_HEIGHT = 560
+
+# Transient flags the widget/node exchange; never persisted, never treated as settings.
+_WIDGET_ONLY_KEYS = frozenset({"_fromWidget", "_action", "_fromNode"})
 
 _sessions: dict[int, LiveImageSession] = {}
 _sessions_lock = threading.Lock()
@@ -108,6 +115,9 @@ class DLSS5LiveImageNode(ControlNode):
         self._finalizer = weakref.finalize(self, _stop_session, self._session_key)
         self._applying_live = False
         self._alpha: Image.Image | None = None
+        self._width_before_split: int | None = None
+        self._last_pushed_state: tuple[str, str, str] | None = None
+        self.set_initial_node_size(width=NODE_WIDTH_NORMAL, height=NODE_HEIGHT)
 
         self.add_parameter(
             Parameter(
@@ -238,12 +248,11 @@ class DLSS5LiveImageNode(ControlNode):
         self.log_params.append_to_logs(message)
 
     def _live_value(self) -> dict[str, Any]:
+        merged = dict(DEFAULT_LIVE)
         value = self.get_parameter_value("live")
         if isinstance(value, dict):
-            merged = dict(DEFAULT_LIVE)
-            merged.update(value)
-            return merged
-        return dict(DEFAULT_LIVE)
+            merged.update({k: v for k, v in value.items() if k not in _WIDGET_ONLY_KEYS})
+        return merged
 
     def _float_from(self, data: dict[str, Any], key: str, default: float) -> float:
         try:
@@ -297,6 +306,8 @@ class DLSS5LiveImageNode(ControlNode):
             value["url"] = url
         if message:
             value["message"] = message
+        value["_fromNode"] = True
+        self._last_pushed_state = (status, str(value["url"]), str(value["message"]))
         self._applying_live = True
         try:
             self.set_parameter_value("live", value)
@@ -304,6 +315,40 @@ class DLSS5LiveImageNode(ControlNode):
                 self.publish_update_to_parameter("live", value)
         finally:
             self._applying_live = False
+
+    def _sync_canvas_width(self, view: str) -> None:
+        """Widen the node only for side-by-side so both stills fit; restore when leaving it.
+
+        Never shrinks a node the user made wider, and leaves a manual resize alone.
+        """
+        size = self.metadata.get("size")
+        current = size if isinstance(size, dict) else {}
+
+        def _int(raw: Any, default: int) -> int:
+            try:
+                return int(raw)
+            except (TypeError, ValueError):
+                return default
+
+        cur_w = _int(current.get("width"), NODE_WIDTH_NORMAL)
+        cur_h = _int(current.get("height"), NODE_HEIGHT)
+        if view == "split":
+            if cur_w >= NODE_WIDTH_SPLIT:
+                return
+            if self._width_before_split is None:
+                self._width_before_split = cur_w
+            want_w = NODE_WIDTH_SPLIT
+        else:
+            if self._width_before_split is None:
+                return
+            want_w, self._width_before_split = self._width_before_split, None
+            if cur_w != NODE_WIDTH_SPLIT:
+                return  # user resized while in split; keep their size
+        new_size = {"width": want_w, "height": max(cur_h, 480)}
+        try:
+            GriptapeNodes.handle_request(SetNodeMetadataRequest(node_name=self.name, metadata={"size": new_size}))
+        except Exception:  # noqa: BLE001
+            self.metadata["size"] = new_size
 
     def _load_rgb(self) -> np.ndarray:
         data = _image_bytes(self.parameter_values.get("image"))
@@ -319,17 +364,22 @@ class DLSS5LiveImageNode(ControlNode):
         if parameter.name == "live":
             if self._applying_live:
                 return
-            if isinstance(value, dict) and value.get("_fromWidget"):
-                action = str(value.get("_action") or "")
-                if action == "restart":
-                    self._on_restart_clicked()
-                    return
-                if action == "stop":
-                    self._on_stop_clicked()
-                    return
-                session = self._session()
-                if session is not None and session.running:
-                    session.update_settings(self._settings())
+            if not (isinstance(value, dict) and value.get("_fromWidget")):
+                return
+            action = str(value.get("_action") or "")
+            # Persist only real settings: a button press must never replay on reload,
+            # and node-side status pushes must not look like widget edits.
+            self.parameter_values["live"] = {k: v for k, v in value.items() if k not in _WIDGET_ONLY_KEYS}
+            self._sync_canvas_width(str(value.get("view") or "wipe"))
+            if action == "restart":
+                self._on_restart_clicked()
+                return
+            if action == "stop":
+                self._on_stop_clicked()
+                return
+            session = self._session()
+            if session is not None and session.running:
+                session.update_settings(self._settings())  # no-op when /cmd already applied it
             return
         if parameter.name == "image":
             image_input = value
@@ -376,6 +426,7 @@ class DLSS5LiveImageNode(ControlNode):
         with _sessions_lock:
             _sessions[self._session_key] = session
         url = session.start()
+        self._sync_canvas_width(str(self._live_value().get("view") or "wipe"))
         self._set_live_status("running", url=url, message="starting worker...")
         self._log(f"Live image preview at {url}\n")
 
@@ -483,7 +534,7 @@ def _on_session_state(node_ref: weakref.ReferenceType, state: dict[str, Any]) ->
     node = node_ref()
     if node is None:
         return
-    message = state.get("error") or state.get("message") or ""
+    message = str(state.get("error") or state.get("message") or "")
     status = "error" if state.get("error") else ("running" if state.get("running") else "stopped")
     url = ""
     session = None
@@ -491,7 +542,12 @@ def _on_session_state(node_ref: weakref.ReferenceType, state: dict[str, Any]) ->
         session = _sessions.get(node._session_key)
     if session is not None:
         url = session.url
+    # The session reports after every evaluate (each slider tick). Only push to the GUI
+    # when something the widget shows actually changed; otherwise every frame would
+    # re-render the node and fight the slider being dragged.
+    if node._last_pushed_state == (status, url, message):
+        return
     try:
-        node._set_live_status(status, url=url, message=str(message))
+        node._set_live_status(status, url=url, message=message)
     except Exception:  # noqa: BLE001
         pass

@@ -34,7 +34,7 @@ from dlss5_worker_bridge import MV_MODE_NONE, DLSS5Settings, DLSS5WorkerError
 
 DEFAULT_PREVIEW_WIDTH = 1280
 IDLE_PAUSE_SECONDS = 30.0
-DEBOUNCE_MS = 80.0  # coalesce rapid slider drags into one evaluate
+DEBOUNCE_MS = 5.0  # coalesce rapid slider drags into one evaluate (the evaluate itself paces us)
 
 
 class LiveImageSession:
@@ -78,6 +78,7 @@ class LiveImageSession:
         self.error: str | None = None
         self.running = False
         self.seq = 0
+        self._source_jpeg: bytes | None = None
 
         self.server = LiveServer(on_command=self._command, get_state=self.state)
         self._thread: threading.Thread | None = None
@@ -94,6 +95,7 @@ class LiveImageSession:
         if cv2 is None:
             raise RuntimeError("opencv-python-headless is required for the live image preview.")
         base = self.server.start()
+        self._publish_source()
         self.running = True
         self._thread = threading.Thread(target=self._run, name="dlss5-live-image", daemon=True)
         self._thread.start()
@@ -109,8 +111,11 @@ class LiveImageSession:
         self.running = False
 
     def update_settings(self, settings: DLSS5Settings) -> None:
+        wanted = replace(settings, mv_mode=MV_MODE_NONE, intensity=1.0)
         with self._lock:
-            self._settings = replace(settings, mv_mode=MV_MODE_NONE, intensity=1.0)
+            if wanted == self._settings:
+                return  # widget already pushed this through /cmd; don't re-evaluate
+            self._settings = wanted
             self._dirty = True
         self._wake.set()
 
@@ -295,11 +300,39 @@ class LiveImageSession:
             with contextlib.suppress(Exception):
                 worker.close()
 
+    def _encode_jpeg(self, rgb: np.ndarray, quality: int = 82) -> bytes:
+        assert cv2 is not None
+        frame = self._shrink(rgb)
+        ok, buf = cv2.imencode(
+            ".jpg",
+            cv2.cvtColor(frame, cv2.COLOR_RGB2BGR),
+            [int(cv2.IMWRITE_JPEG_QUALITY), quality],
+        )
+        if not ok:
+            raise RuntimeError("JPEG encode failed")
+        return buf.tobytes()
+
+    def _publish_source(self) -> None:
+        if cv2 is None:
+            return
+        try:
+            self._source_jpeg = self._encode_jpeg(self.source, quality=86)
+            self.server.files["/source.jpg"] = self._source_jpeg
+        except Exception:  # noqa: BLE001
+            self._source_jpeg = None
+
     def _publish_current(self) -> None:
         if self._out is None or cv2 is None:
             return
         t0 = time.perf_counter()
-        jpeg = self._compose(self.source, self._out)
+        if self._source_jpeg is None:
+            self._publish_source()
+        if self._view == VIEW_SPLIT:
+            # Side by side: the stream carries the DLSS result alone; the widget shows the
+            # static /source.jpg next to it (both full frames, nothing cropped).
+            jpeg = self._encode_jpeg(self._out, quality=88)
+        else:
+            jpeg = self._compose(self.source, self._out)
         self.encode_ms = (time.perf_counter() - t0) * 1000
         self.server.broadcast.publish(jpeg)
         self.seq += 1
@@ -329,8 +362,8 @@ class LiveImageSession:
         elif view == VIEW_AFTER:
             frame = b
         elif view == VIEW_SPLIT:
-            mid = a.shape[1] // 2
-            frame = np.concatenate([a[:, :mid], b[:, mid:]], axis=1)
+            # Both full images, uncropped, placed left/right (widget prefers /source.jpg + /after.jpg).
+            frame = np.concatenate([a, b], axis=1)
         else:  # wipe
             mid = int(round(self._wipe * a.shape[1]))
             frame = a.copy()
