@@ -34,7 +34,7 @@ from dlss5_worker_bridge import MV_MODE_NONE, DLSS5Settings, DLSS5WorkerError
 
 DEFAULT_PREVIEW_WIDTH = 1280
 IDLE_PAUSE_SECONDS = 30.0
-DEBOUNCE_MS = 40.0  # coalesce rapid slider drags into one evaluate
+DEBOUNCE_MS = 80.0  # coalesce rapid slider drags into one evaluate
 
 
 class LiveImageSession:

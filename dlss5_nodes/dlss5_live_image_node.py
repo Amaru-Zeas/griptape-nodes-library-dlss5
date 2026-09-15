@@ -151,6 +151,7 @@ class DLSS5LiveImageNode(ControlNode):
                 full_width=True,
                 tooltip="Restart the resident DLSS 5 worker on the current image (also happens automatically when the image changes).",
                 on_click=self._on_restart_clicked,
+                hide=True,
             )
         )
         self.add_node_element(
@@ -162,6 +163,7 @@ class DLSS5LiveImageNode(ControlNode):
                 full_width=True,
                 tooltip="Stop the worker and free the GPU. Connect/restart to start again.",
                 on_click=self._on_stop_clicked,
+                hide=True,
             )
         )
 
@@ -317,10 +319,17 @@ class DLSS5LiveImageNode(ControlNode):
         if parameter.name == "live":
             if self._applying_live:
                 return
-            # Widget pushed new look settings: apply to the running session (also sent via /cmd).
-            session = self._session()
-            if session is not None and session.running and isinstance(value, dict) and value.get("_fromWidget"):
-                session.update_settings(self._settings())
+            if isinstance(value, dict) and value.get("_fromWidget"):
+                action = str(value.get("_action") or "")
+                if action == "restart":
+                    self._on_restart_clicked()
+                    return
+                if action == "stop":
+                    self._on_stop_clicked()
+                    return
+                session = self._session()
+                if session is not None and session.running:
+                    session.update_settings(self._settings())
             return
         if parameter.name == "image":
             image_input = value

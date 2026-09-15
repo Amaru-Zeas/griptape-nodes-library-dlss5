@@ -146,9 +146,12 @@ export default function DLSS5LiveImage(container, props) {
   let url = "";
   let pollTimer = null;
   let wiping = false;
+  let sliding = false;
   let emitting = false;
   let lastSeq = -1;
   let fullscreen = false;
+  let cmdTimer = null;
+  let pendingCmd = null;
   let settings = {
     look: "Ultra (max realism)",
     local_tone: 1.0,
@@ -233,6 +236,8 @@ export default function DLSS5LiveImage(container, props) {
   const structure = mkSlider(0, 2, 0.01, settings.local_structure);
   const skin = mkSlider(-1, 2, 0.01, settings.skin_structure);
   const mask = mkCheck("Auto mask (skin)", settings.auto_mask);
+  const restartBtn = mkBtn("↻  Restart live preview", "Restart the resident worker on the current image");
+  const stopBtn = mkBtn("■  Stop live preview", "Stop the worker and free the GPU");
   const fullBtn = mkBtn("⛶  Full screen", "Full screen preview + controls (Esc to leave)");
   const closeBtn = mkBtn("✕  Close full screen", "Leave full screen (Esc)", { accent: true });
   closeBtn.hidden = true;
@@ -253,6 +258,8 @@ export default function DLSS5LiveImage(container, props) {
     block("Upscale", upscaleSel),
     block("Model preset", presetSel),
     block("View", viewSel),
+    restartBtn,
+    stopBtn,
     fullBtn,
     closeBtn,
   );
@@ -275,13 +282,17 @@ export default function DLSS5LiveImage(container, props) {
     document.body.appendChild(overlay);
     overlay.append(body);
     overlay.style.display = "flex";
+    overlay.style.inset = "0 auto auto 0";
+    overlay.style.width = "83.333%";
+    overlay.style.height = "83.333%";
+    overlay.style.zoom = "1.2";
     body.style.flex = "1 1 auto";
     body.style.minHeight = "0";
     body.style.height = "100%";
     stage.style.borderRadius = "8px";
-    panel.style.maxWidth = "320px";
-    panel.style.flex = "0 0 320px";
-    panel.style.width = "320px";
+    panel.style.maxWidth = "380px";
+    panel.style.flex = "0 0 380px";
+    panel.style.width = "380px";
     fullBtn.hidden = true;
     closeBtn.hidden = false;
     if (overlay.requestFullscreen) overlay.requestFullscreen().catch(() => {});
@@ -300,6 +311,7 @@ export default function DLSS5LiveImage(container, props) {
     body.style.flex = "";
     body.style.minHeight = "320px";
     body.style.height = "";
+    overlay.style.zoom = "";
     panel.style.maxWidth = "42%";
     panel.style.flex = "0 0 280px";
     panel.style.width = "280px";
@@ -326,8 +338,19 @@ export default function DLSS5LiveImage(container, props) {
     fetch(`${url}/cmd?${q}`).catch(() => {});
   }
 
+  function cmdSoon(params) {
+    pendingCmd = { ...(pendingCmd || {}), ...params };
+    if (cmdTimer) return;
+    cmdTimer = setTimeout(() => {
+      cmdTimer = null;
+      const next = pendingCmd;
+      pendingCmd = null;
+      if (next) cmd(next);
+    }, 80);
+  }
+
   function refreshFrame() {
-    if (!url) return;
+    if (!url || sliding) return;
     img.src = `${url}/frame.jpg?t=${Date.now()}`;
   }
 
@@ -379,15 +402,40 @@ export default function DLSS5LiveImage(container, props) {
     mask._input.checked = !!p.auto_mask;
   }
 
-  function pushLiveCmd() {
-    cmd({
+  function emitAction(action) {
+    if (!onChange || emitting) return;
+    emitting = true;
+    try {
+      onChange({
+        status: latestProps.value?.status || "running",
+        url: url || latestProps.value?.url || "",
+        message: latestProps.value?.message || "",
+        look: settings.look,
+        local_tone: settings.local_tone,
+        local_structure: settings.local_structure,
+        skin_structure: settings.skin_structure,
+        auto_mask: settings.auto_mask,
+        nr_style: settings.nr_style,
+        upscale_mode: settings.upscale_mode,
+        model_preset: settings.model_preset,
+        view: settings.view,
+        wipe: settings.wipe,
+        _fromWidget: true,
+        _action: action,
+      });
+    } finally {
+      emitting = false;
+    }
+  }
+
+  function pushLiveCmd(extra) {
+    cmdSoon({
       local_tone: settings.local_tone,
       local_structure: settings.local_structure,
       skin_structure: settings.skin_structure,
       auto_mask: settings.auto_mask ? 1 : 0,
       nr_style: settings.nr_style,
-      upscale_mode: settings.upscale_mode,
-      model_preset: settings.model_preset,
+      ...(extra || {}),
     });
   }
 
@@ -405,17 +453,33 @@ export default function DLSS5LiveImage(container, props) {
 
   function bindSlider(row, key) {
     const input = row._input;
+    input.addEventListener("pointerdown", () => {
+      sliding = true;
+    });
     input.addEventListener("input", () => {
       settings[key] = Number(input.value);
       markCustom();
-      pushLiveCmd();
+      const one = {};
+      one[key] = settings[key];
+      cmdSoon(one); // GPU only, throttled; don't decode a new JPEG until release
     });
     const commit = () => {
+      sliding = false;
       settings[key] = Number(input.value);
+      if (pendingCmd) {
+        cmd(pendingCmd);
+        pendingCmd = null;
+      }
+      if (cmdTimer) {
+        clearTimeout(cmdTimer);
+        cmdTimer = null;
+      }
+      refreshFrame();
       emitSettings();
     };
     input.addEventListener("change", commit);
     input.addEventListener("pointerup", commit);
+    input.addEventListener("pointercancel", commit);
     input.addEventListener("keyup", (e) => {
       if (e.key === "ArrowLeft" || e.key === "ArrowRight" || e.key === "Home" || e.key === "End") commit();
     });
@@ -432,12 +496,16 @@ export default function DLSS5LiveImage(container, props) {
   });
   upscaleSel.addEventListener("change", () => {
     settings.upscale_mode = upscaleSel.value;
-    pushLive();
+    cmd({ upscale_mode: settings.upscale_mode });
+    emitSettings();
   });
   presetSel.addEventListener("change", () => {
     settings.model_preset = presetSel.value;
-    pushLive();
+    cmd({ model_preset: settings.model_preset });
+    emitSettings();
   });
+  restartBtn.addEventListener("click", () => emitAction("restart"));
+  stopBtn.addEventListener("click", () => emitAction("stop"));
   viewSel.addEventListener("change", () => {
     settings.view = viewSel.value;
     cmd({ view: settings.view });
@@ -493,7 +561,7 @@ export default function DLSS5LiveImage(container, props) {
         if (st.error) placeholder.textContent = st.error;
         if (typeof st.seq === "number" && st.seq !== lastSeq) {
           lastSeq = st.seq;
-          refreshFrame();
+          if (!sliding) refreshFrame();
         }
       })
       .catch(() => {});
@@ -571,6 +639,8 @@ export default function DLSS5LiveImage(container, props) {
   function cleanup() {
     leaveFull();
     document.removeEventListener("fullscreenchange", onFsChange);
+    if (cmdTimer) clearTimeout(cmdTimer);
+    cmdTimer = null;
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = null;
     img.src = "";
