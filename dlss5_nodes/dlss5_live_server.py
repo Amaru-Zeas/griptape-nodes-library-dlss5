@@ -386,6 +386,30 @@ class LiveSession:
         if "speed" in args:
             with contextlib.suppress(ValueError):
                 self.speed = max(0.0, min(8.0, float(args["speed"])))
+        live_updates: dict[str, Any] = {}
+        if "nr_style" in args:
+            live_updates["nr_style"] = args["nr_style"]
+        if "auto_mask" in args:
+            live_updates["auto_mask"] = args["auto_mask"] in ("1", "true", "True", "yes")
+        for key in ("local_tone", "local_structure", "skin_structure"):
+            if key in args:
+                with contextlib.suppress(ValueError):
+                    live_updates[key] = float(args[key])
+        restart_updates: dict[str, Any] = {}
+        if "upscale_mode" in args:
+            restart_updates["upscale_mode"] = args["upscale_mode"]
+        if "model_preset" in args:
+            restart_updates["model_preset"] = args["model_preset"]
+        seq: bool | None = None
+        if "sequence" in args:
+            seq = args["sequence"] in ("1", "true", "True", "yes")
+        if live_updates or restart_updates or seq is not None:
+            with self._lock:
+                wanted = replace(self._settings, **live_updates, **restart_updates)
+                self._settings = self._for_mode(wanted, self.sequence if seq is None else seq)
+                self._dirty = True
+            self._wake.set()
+            return
         self._wake.set()
 
     def command(self, **kwargs: Any) -> None:

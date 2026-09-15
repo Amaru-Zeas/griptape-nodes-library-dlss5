@@ -46,7 +46,7 @@
         {
             "name": "DLSS5LivePreview",
             "path": "widgets/DLSS5LivePreview.js",
-            "description": "Live before/after MJPEG preview with wipe, transport and scrubber for the DLSS 5 Live Video node."
+            "description": "Landscape live video preview: clip on the left, look controls on the right, matching Live Image chrome."
         },
         {
             "name": "DLSS5LiveImage",

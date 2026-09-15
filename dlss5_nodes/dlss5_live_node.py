@@ -34,6 +34,7 @@ from griptape_nodes.exe_types.param_types.parameter_button import ParameterButto
 from griptape_nodes.exe_types.param_types.parameter_dict import ParameterDict
 from griptape_nodes.files.file import File
 from griptape_nodes.files.project_file import ProjectFileDestination
+from griptape_nodes.retained_mode.events.node_events import SetNodeMetadataRequest
 from griptape_nodes.retained_mode.griptape_nodes import GriptapeNodes
 from griptape_nodes.traits.options import Options
 from griptape_nodes.traits.slider import Slider
@@ -92,6 +93,28 @@ TEMPORAL_CHOICES = [TEMPORAL_SINGLE, TEMPORAL_SEQUENCE]
 
 DEFAULT_OUTPUT_FILENAME = "dlss5_live.mp4"
 BAKE_PIPELINE_DEPTH = 3
+NODE_WIDTH_NORMAL = 860
+NODE_WIDTH_SPLIT = 1340
+NODE_HEIGHT = 1140
+WIDGET_HEIGHT = 780
+_WIDGET_ONLY_KEYS = frozenset({"_fromWidget", "_action", "_fromNode"})
+
+DEFAULT_LIVE = {
+    "status": "stopped",
+    "url": "",
+    "message": "Press  Start live video.",
+    "look": LOOK_ULTRA,
+    "local_tone": 1.0,
+    "local_structure": 2.0,
+    "skin_structure": 2.0,
+    "auto_mask": True,
+    "nr_style": "Default",
+    "upscale_mode": "1.0x (DLAA / native)",
+    "model_preset": "M",
+    "temporal": TEMPORAL_SINGLE,
+    "view": "wipe",
+    "wipe": 0.5,
+}
 
 # Live sessions keyed by node object id. Module-level so the weakref finaliser can stop a
 # session after its node object is gone (workflow reload, engine shutdown).
@@ -144,7 +167,9 @@ class DLSS5LivePreviewNode(ControlNode):
         self._bake_thread: threading.Thread | None = None
         self._session_key = id(self)
         self._finalizer = weakref.finalize(self, _stop_session, self._session_key)
-        self.set_initial_node_size(width=720, height=980)
+        self._width_before_split: int | None = None
+        self.set_initial_node_size(width=NODE_WIDTH_NORMAL, height=NODE_HEIGHT)
+        self._ensure_min_size()
 
         # -- video in / out -----------------------------------------------------------
         self.add_parameter(
@@ -172,15 +197,15 @@ class DLSS5LivePreviewNode(ControlNode):
         self.add_parameter(
             ParameterDict(
                 name="live_preview",
-                default_value={"status": "stopped", "url": "", "message": "Press  Start live video."},
+                default_value=dict(DEFAULT_LIVE),
                 tooltip=(
-                    "Live before/after view. Drag on the image to move the wipe; use the transport to pause, step and "
-                    "scrub. Slider changes show up on the next frame."
+                    "Live before/after view. Drag on the image to move the wipe; look controls on the right apply "
+                    "on the next frame."
                 ),
                 allowed_modes={ParameterMode.PROPERTY},
                 traits={Widget(name=WIDGET_NAME, library=LIBRARY_NAME)},
                 hide_label=True,
-                ui_options={"height": 340, "is_full_width": True},
+                ui_options={"height": WIDGET_HEIGHT, "is_full_width": True},
             )
         )
         self.add_node_element(
@@ -193,6 +218,7 @@ class DLSS5LivePreviewNode(ControlNode):
                 full_width=True,
                 tooltip="Start (or restart) the resident DLSS 5 worker and loop the clip in the preview above.",
                 on_click=self._on_start_clicked,
+                hide=True,
             )
         )
         self.add_node_element(
@@ -204,6 +230,7 @@ class DLSS5LivePreviewNode(ControlNode):
                 full_width=True,
                 tooltip="Stop the loop and release the GPU worker.",
                 on_click=self._on_stop_clicked,
+                hide=True,
             )
         )
 
@@ -217,6 +244,7 @@ class DLSS5LivePreviewNode(ControlNode):
                 traits={Options(choices=LOOK_CHOICES)},
                 tooltip="One-click look preset; sets the four sliders below. Touching a slider switches this to Custom.",
                 allowed_modes={ParameterMode.PROPERTY},
+                hide=True,
             )
         )
         self.add_parameter(self._slider("local_tone", 1.0, 0.0, 2.0, "Low-frequency tone / lighting response. Live."))
@@ -237,6 +265,7 @@ class DLSS5LivePreviewNode(ControlNode):
                 default_value=True,
                 tooltip="Let the model detect skin regions (gates skin_structure). Live.",
                 allowed_modes={ParameterMode.PROPERTY},
+                hide=True,
             )
         )
         self.add_parameter(
@@ -248,6 +277,7 @@ class DLSS5LivePreviewNode(ControlNode):
                 traits={Options(choices=list(NR_STYLES))},
                 tooltip="Neural Rendering style: Natural stays closer to the source, Cinematic pushes contrast. Live.",
                 allowed_modes={ParameterMode.PROPERTY},
+                hide=True,
             )
         )
         self.add_parameter(
@@ -259,6 +289,7 @@ class DLSS5LivePreviewNode(ControlNode):
                 traits={Options(choices=list(UPSCALE_MODES))},
                 tooltip="1.0x = neural rendering only; above adds DLSS Super Resolution. Hot-swaps the worker (~1.5 s).",
                 allowed_modes={ParameterMode.PROPERTY},
+                hide=True,
             )
         )
         self.add_parameter(
@@ -273,6 +304,7 @@ class DLSS5LivePreviewNode(ControlNode):
                     "Sequence: temporal history + optical flow estimated inside the worker. Hot-swaps the worker."
                 ),
                 allowed_modes={ParameterMode.PROPERTY},
+                hide=True,
             )
         )
 
@@ -289,6 +321,7 @@ class DLSS5LivePreviewNode(ControlNode):
                 full_width=True,
                 tooltip="Render every frame with the current settings to output_file (project outputs) -> output_video.",
                 on_click=self._on_bake_clicked,
+                hide=True,
             )
         )
 
@@ -305,6 +338,7 @@ class DLSS5LivePreviewNode(ControlNode):
                     "Super Resolution pass when upscaling. Hot-swaps the worker."
                 ),
                 allowed_modes={ParameterMode.PROPERTY},
+                hide=True,
             )
             Parameter(
                 name="dis_preset",
@@ -412,9 +446,80 @@ class DLSS5LivePreviewNode(ControlNode):
             tooltip=tooltip,
             traits={Slider(min_val=lo, max_val=hi)},
             allowed_modes={ParameterMode.PROPERTY, ParameterMode.INPUT},
+            hide=True,
         )
 
     # ------------------------------------------------------------------ helpers
+
+    def _live_value(self) -> dict[str, Any]:
+        merged = dict(DEFAULT_LIVE)
+        for name in (
+            "look",
+            "local_tone",
+            "local_structure",
+            "skin_structure",
+            "auto_mask",
+            "nr_style",
+            "upscale_mode",
+            "model_preset",
+            "temporal",
+        ):
+            pv = self.get_parameter_value(name)
+            if pv is not None:
+                merged[name] = pv
+        value = self.get_parameter_value("live_preview")
+        if isinstance(value, dict):
+            merged.update({k: v for k, v in value.items() if k not in _WIDGET_ONLY_KEYS and v not in (None, "")})
+        return merged
+
+    def _ensure_min_size(self) -> None:
+        size = self.metadata.get("size") if isinstance(self.metadata.get("size"), dict) else {}
+
+        def _int(raw: Any, default: int) -> int:
+            try:
+                return int(raw)
+            except (TypeError, ValueError):
+                return default
+
+        want = {
+            "width": max(_int(size.get("width"), NODE_WIDTH_NORMAL), NODE_WIDTH_NORMAL),
+            "height": max(_int(size.get("height"), NODE_HEIGHT), NODE_HEIGHT),
+        }
+        if size.get("width") == want["width"] and size.get("height") == want["height"]:
+            return
+        self.metadata["size"] = want
+        with contextlib.suppress(Exception):
+            if getattr(self, "name", None):
+                GriptapeNodes.handle_request(SetNodeMetadataRequest(node_name=self.name, metadata={"size": want}))
+
+    def _sync_canvas_width(self, view: str) -> None:
+        size = self.metadata.get("size") if isinstance(self.metadata.get("size"), dict) else {}
+
+        def _int(raw: Any, default: int) -> int:
+            try:
+                return int(raw)
+            except (TypeError, ValueError):
+                return default
+
+        cur_w = _int(size.get("width"), NODE_WIDTH_NORMAL)
+        cur_h = _int(size.get("height"), NODE_HEIGHT)
+        if view == "split":
+            if cur_w >= NODE_WIDTH_SPLIT:
+                return
+            if self._width_before_split is None:
+                self._width_before_split = cur_w
+            want_w = NODE_WIDTH_SPLIT
+        else:
+            if self._width_before_split is None:
+                return
+            want_w, self._width_before_split = self._width_before_split, None
+            if cur_w != NODE_WIDTH_SPLIT:
+                return
+        new_size = {"width": want_w, "height": max(cur_h, NODE_HEIGHT)}
+        try:
+            GriptapeNodes.handle_request(SetNodeMetadataRequest(node_name=self.name, metadata={"size": new_size}))
+        except Exception:  # noqa: BLE001
+            self.metadata["size"] = new_size
 
     def _log(self, message: str) -> None:
         with contextlib.suppress(Exception):
@@ -439,20 +544,35 @@ class DLSS5LivePreviewNode(ControlNode):
         return find_native_runtime(self._runtime_dir())
 
     def _sequence(self) -> bool:
-        return str(self.get_parameter_value("temporal") or TEMPORAL_SINGLE) == TEMPORAL_SEQUENCE
+        live = self._live_value()
+        temporal = str(live.get("temporal") or self.get_parameter_value("temporal") or TEMPORAL_SINGLE)
+        return temporal == TEMPORAL_SEQUENCE
 
     def _settings(self) -> DLSS5Settings:
         clamp = lambda v, lo, hi: min(hi, max(lo, v))  # noqa: E731
+        live = self._live_value()
+
+        def _pick(name: str, default: Any) -> Any:
+            if live.get(name) not in (None, ""):
+                return live[name]
+            return self.get_parameter_value(name) if self.get_parameter_value(name) is not None else default
+
+        def _float_pick(name: str, default: float) -> float:
+            try:
+                return float(_pick(name, default))
+            except (TypeError, ValueError):
+                return default
+
         return DLSS5Settings(
-            upscale_mode=str(self.get_parameter_value("upscale_mode") or "1.0x (DLAA / native)"),
-            model_preset=str(self.get_parameter_value("model_preset") or "M"),
-            nr_style=str(self.get_parameter_value("nr_style") or "Default"),
+            upscale_mode=str(_pick("upscale_mode", "1.0x (DLAA / native)")),
+            model_preset=str(_pick("model_preset", "M")),
+            nr_style=str(_pick("nr_style", "Default")),
             nr_preset="Default",
-            auto_mask=bool(self.get_parameter_value("auto_mask")),
+            auto_mask=bool(_pick("auto_mask", True)),
             intensity=1.0,
-            local_tone=clamp(self._float("local_tone", 1.0), 0.0, 2.0),
-            local_structure=clamp(self._float("local_structure", 2.0), 0.0, 2.0),
-            skin_structure=clamp(self._float("skin_structure", 2.0), -1.0, 2.0),
+            local_tone=clamp(_float_pick("local_tone", 1.0), 0.0, 2.0),
+            local_structure=clamp(_float_pick("local_structure", 2.0), 0.0, 2.0),
+            skin_structure=clamp(_float_pick("skin_structure", 2.0), -1.0, 2.0),
             mv_mode=MV_MODE_AUTO_DIS if self._sequence() else MV_MODE_NONE,
             dis_preset=str(self.get_parameter_value("dis_preset") or "Balanced (640p)"),
             warmup_frames=0,
@@ -463,7 +583,13 @@ class DLSS5LivePreviewNode(ControlNode):
             return _sessions.get(self._session_key)
 
     def _set_preview_value(self, status: str, url: str = "", message: str = "") -> None:
-        value = {"status": status, "url": url, "message": message}
+        value = self._live_value()
+        value["status"] = status
+        if url or status != "running":
+            value["url"] = url
+        if message:
+            value["message"] = message
+        value["_fromNode"] = True
         self.set_parameter_value("live_preview", value)
         with contextlib.suppress(Exception):
             self.publish_update_to_parameter("live_preview", value)
@@ -487,6 +613,32 @@ class DLSS5LivePreviewNode(ControlNode):
 
     def after_value_set(self, parameter: Parameter, value: Any) -> None:
         if self._applying_preset:
+            return
+        if parameter.name == "live_preview":
+            if not (isinstance(value, dict) and value.get("_fromWidget")):
+                return
+            action = str(value.get("_action") or "")
+            self.parameter_values["live_preview"] = {k: v for k, v in value.items() if k not in _WIDGET_ONLY_KEYS}
+            self._sync_canvas_width(str(value.get("view") or "wipe"))
+            self._applying_preset = True
+            try:
+                for name in ("look", "local_tone", "local_structure", "skin_structure", "auto_mask", "nr_style", "upscale_mode", "model_preset", "temporal"):
+                    if name in value:
+                        self.set_parameter_value(name, value[name])
+            finally:
+                self._applying_preset = False
+            if action == "restart":
+                self._on_start_clicked()
+                return
+            if action == "stop":
+                self._on_stop_clicked()
+                return
+            if action == "bake":
+                self._on_bake_clicked()
+                return
+            session = self._session()
+            if session is not None and session.running:
+                session.update_settings(self._settings(), sequence=self._sequence())
             return
         if parameter.name == "look":
             preset = LOOK_PRESETS.get(str(value))
