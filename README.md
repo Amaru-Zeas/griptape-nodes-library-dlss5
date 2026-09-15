@@ -177,6 +177,21 @@ Alpha is preserved: RGB goes through DLSS, the alpha channel is resized to the o
 the pass plus ~4 s worker start with the `merserk` backend (per image; ReShade only flushes
 its log on exit), or a few hundred ms total with the `native` backend once the worker is warm.
 
+## Node: DLSS 5 Live Image
+
+Always-live still preview (separate from the one-shot Image node above). Landscape widget:
+before/after wipe on the left, look controls on the right. Connect an image and the
+resident native worker starts automatically; tone / structure / skin / mask / style apply
+on the next evaluate, upscale / model preset hot-swap the worker. *Bake image with these
+settings* (or run the node in a flow) writes `output_image` through the project's outputs.
+
+| Control | Notes |
+| --- | --- |
+| Widget | Look, style, tone, structure, skin, auto mask, upscale, model preset, view. Drag the wipe. |
+| Restart / Stop | Restart the worker on the current image, or free the GPU. |
+| `output_file` / `output_format` | Bake destination (default `dlss5_live.png`) and PNG / JPEG / WebP. |
+| **Advanced** | `preview_width` (stream cap; bake stays full-res), `runtime_dir`. |
+
 ## Node: DLSS 5 Live Preview
 
 Real-time version of the render node: the clip loops through a resident native worker

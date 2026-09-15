@@ -102,6 +102,13 @@ project's outputs as `output_file` (default `dlss5.png`; `output_format` in Adva
 picks PNG / JPEG / WebP). Alpha is kept. Like the video node, the `image` row has a
 pass-through out-port for a Compare Images node.
 
+**Live Image - dial a still in real time**
+**DLSS 5 Live Image** is the still version of Live Preview. Landscape widget: wipe on
+the left, look controls on the right. Connect an image and it starts automatically
+(native worker). Slider changes apply on the next evaluate; *Bake image with these
+settings* writes `output_image`. Keep **DLSS 5 Neural Render (Image)** for one-shot
+bakes without the live UI.
+
 **Live Preview node - dial the look in real time**
 **DLSS 5 Live Preview** is the second node. Instead of rendering and waiting, it loops
 your clip through a resident DLSS 5 worker and shows the result *inside the node* while

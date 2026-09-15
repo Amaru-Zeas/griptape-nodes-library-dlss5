@@ -3,7 +3,7 @@
     "library_schema_version": "0.1.0",
     "metadata": {
         "author": "Griptape Community",
-        "description": "NVIDIA DLSS 5 Neural Rendering (+ DLSS Super Resolution) for video. Drives the worker from Merserk's 'DLSS 5 Visual Enhancer' (point runtime_dir at its bin\\runtime folder) or the bundled DLSS5-for-Nuke worker. Windows + RTX only.",
+        "description": "NVIDIA DLSS 5 Neural Rendering (+ DLSS Super Resolution) for video and images. Live preview nodes (video + still) plus one-shot bake nodes. Windows + RTX only.",
         "library_version": "0.1.0",
         "engine_version": "0.67.0",
         "tags": [
@@ -47,6 +47,11 @@
             "name": "DLSS5LivePreview",
             "path": "widgets/DLSS5LivePreview.js",
             "description": "Live before/after MJPEG preview with wipe, transport and scrubber for the DLSS 5 Live Preview node."
+        },
+        {
+            "name": "DLSS5LiveImage",
+            "path": "widgets/DLSS5LiveImage.js",
+            "description": "Landscape live still preview: image wipe on the left, look controls on the right for the DLSS 5 Live Image node."
         }
     ],
     "nodes": [
@@ -84,6 +89,15 @@
                 "category": "DLSS5",
                 "description": "Loop a clip through the native DLSS 5 worker and adjust tone / structure / skin / style live with a before-after wipe; Bake renders the full clip to the project's outputs. Uses the bundled native worker with the DLLs from a DLSS 5 Visual Enhancer install.",
                 "display_name": "DLSS 5 Live Preview"
+            }
+        },
+        {
+            "class_name": "DLSS5LiveImageNode",
+            "file_path": "dlss5_live_image_node.py",
+            "metadata": {
+                "category": "DLSS5",
+                "description": "Always-live still preview: landscape widget with the image on the left and look controls on the right. Slider changes hit the resident native worker immediately. Bake writes output_image. Separate from the one-shot Image render node.",
+                "display_name": "DLSS 5 Live Image"
             }
         }
     ]
