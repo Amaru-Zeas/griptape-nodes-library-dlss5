@@ -195,14 +195,16 @@ export default function DLSS5LiveImage(container, props) {
 
   const wrapper = el(
     "div",
-    `display:flex;flex-direction:column;gap:8px;width:100%;height:100%;min-height:360px;box-sizing:border-box;padding:8px;` +
+    `display:flex;flex-direction:column;gap:8px;width:100%;height:100%;min-height:700px;box-sizing:border-box;padding:8px;` +
       `background:${C.rootBg};border:1px solid ${C.rootBorder};border-radius:10px;font-family:${FONT};color:${C.text};`,
   );
   wrapper.className = "nodrag nowheel dlss5-live-img-root";
+  container.style.minHeight = "720px";
+  container.style.height = "100%";
 
   const body = el(
     "div",
-    "display:flex;flex-direction:row;gap:10px;flex:1 1 auto;min-height:320px;width:100%;box-sizing:border-box;",
+    "display:flex;flex-direction:row;gap:10px;flex:1 1 auto;min-height:680px;width:100%;box-sizing:border-box;",
   );
 
   const stage = el(
@@ -245,8 +247,8 @@ export default function DLSS5LiveImage(container, props) {
 
   const panel = el(
     "div",
-    `flex:0 0 280px;width:280px;max-width:42%;display:flex;flex-direction:column;gap:10px;` +
-      `overflow:auto;padding:8px;box-sizing:border-box;background:${C.panelBg};border:1px solid ${C.rootBorder};border-radius:8px;`,
+    `flex:0 0 280px;width:280px;max-width:42%;display:flex;flex-direction:column;gap:8px;` +
+      `overflow:visible;padding:8px;box-sizing:border-box;background:${C.panelBg};border:1px solid ${C.rootBorder};border-radius:8px;`,
   );
 
   const lookSel = mkSelect(
@@ -355,7 +357,7 @@ export default function DLSS5LiveImage(container, props) {
     overlay.style.display = "none";
     overlay.remove();
     body.style.flex = "";
-    body.style.minHeight = "320px";
+    body.style.minHeight = "680px";
     body.style.height = "";
     panel.style.maxWidth = "42%";
     panel.style.flex = "0 0 280px";

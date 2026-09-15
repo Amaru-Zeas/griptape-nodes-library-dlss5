@@ -87,9 +87,9 @@ DEFAULT_LIVE = {
 DEFAULT_OUTPUT_FILENAME = "dlss5_live.png"
 NODE_WIDTH_NORMAL = 860
 NODE_WIDTH_SPLIT = 1340
-# Fresh drop: title + ports + landscape widget + output_file + bake + collapsed groups.
-NODE_HEIGHT = 820
-WIDGET_HEIGHT = 460
+# Title + ports + landscape widget (all look controls + Start/Stop/Full/Bake) + output_file + collapsed groups.
+NODE_HEIGHT = 1100
+WIDGET_HEIGHT = 720
 
 # Transient flags the widget/node exchange; never persisted, never treated as settings.
 _WIDGET_ONLY_KEYS = frozenset({"_fromWidget", "_action", "_fromNode"})
@@ -120,6 +120,9 @@ class DLSS5LiveImageNode(ControlNode):
         self._width_before_split: int | None = None
         self._last_pushed_state: tuple[str, str, str] | None = None
         self.set_initial_node_size(width=NODE_WIDTH_NORMAL, height=NODE_HEIGHT)
+        # set_initial_node_size is a no-op once the canvas has stamped a size, so a node
+        # dropped at the old 560/820 height would stay cropped. Floor it on every construct.
+        self._ensure_min_size()
 
         self.add_parameter(
             Parameter(
@@ -320,6 +323,27 @@ class DLSS5LiveImageNode(ControlNode):
         finally:
             self._applying_live = False
 
+    def _ensure_min_size(self) -> None:
+        """Keep the canvas node at least tall/wide enough for the full landscape widget."""
+        size = self.metadata.get("size") if isinstance(self.metadata.get("size"), dict) else {}
+
+        def _int(raw: Any, default: int) -> int:
+            try:
+                return int(raw)
+            except (TypeError, ValueError):
+                return default
+
+        want = {
+            "width": max(_int(size.get("width"), NODE_WIDTH_NORMAL), NODE_WIDTH_NORMAL),
+            "height": max(_int(size.get("height"), NODE_HEIGHT), NODE_HEIGHT),
+        }
+        if size.get("width") == want["width"] and size.get("height") == want["height"]:
+            return
+        self.metadata["size"] = want
+        with contextlib.suppress(Exception):
+            if getattr(self, "name", None):
+                GriptapeNodes.handle_request(SetNodeMetadataRequest(node_name=self.name, metadata={"size": want}))
+
     def _sync_canvas_width(self, view: str) -> None:
         """Widen the node only for side-by-side so both stills fit; restore when leaving it.
 
@@ -348,7 +372,7 @@ class DLSS5LiveImageNode(ControlNode):
             want_w, self._width_before_split = self._width_before_split, None
             if cur_w != NODE_WIDTH_SPLIT:
                 return  # user resized while in split; keep their size
-        new_size = {"width": want_w, "height": max(cur_h, 480)}
+        new_size = {"width": want_w, "height": max(cur_h, NODE_HEIGHT)}
         try:
             GriptapeNodes.handle_request(SetNodeMetadataRequest(node_name=self.name, metadata={"size": new_size}))
         except Exception:  # noqa: BLE001
