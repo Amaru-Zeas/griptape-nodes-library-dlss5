@@ -1,11 +1,32 @@
 // DLSS 5 Live Image widget — landscape layout.
 //
-// Left: before/after wipe of the still (JPEG from the node's LiveImageSession).
-// Right: look controls. Sliders hit /cmd while dragging (GPU only); onChange to the
-// node runs on release so Bake stays in sync without lagging the UI.
-// Full screen shows only this landscape (preview + controls), not the node's buttons.
+// Visual language matches Shot Planner / Seedance / Omni Image widgets:
+// dark gray chrome (#0c0e11), muted amber accent (#d9c6a4 / #a58050), ui-monospace.
+//
+// Left: before/after wipe. Right: look controls.
+// Sliders hit /cmd while dragging; onChange syncs on release.
+// Full screen shows only this landscape (preview + controls).
 
 const POLL_MS = 250;
+
+// Shot Planner V2 palette (same as SeedanceMasterWidget / ImageGenPromptWidget).
+const FONT = "ui-monospace,'Cascadia Code','JetBrains Mono',Consolas,monospace";
+const C = {
+  rootBg: "#0c0e11",
+  rootBorder: "#21252c",
+  text: "#c6cad1",
+  label: "#8a929e",
+  muted: "#6c7481",
+  inputBg: "#0f1116",
+  inputBorder: "#333a44",
+  chipBg: "#161a20",
+  panelBg: "#12151a",
+  accent: "#d9c6a4",
+  accentBorder: "#6b5836",
+  accentBg: "#241d13",
+  accentBar: "#a58050",
+  stageBg: "#0a0c0f",
+};
 
 const LOOKS = [
   ["Ultra (max realism)", { local_tone: 1.0, local_structure: 2.0, skin_structure: 2.0, auto_mask: true }],
@@ -40,19 +61,15 @@ function stopDrag(node) {
 }
 
 function fieldLabel(text) {
-  return el(
-    "div",
-    "font:11px/1.2 var(--font-sans, sans-serif);color:var(--muted-foreground, #999);margin:0 0 3px;",
-    text,
-  );
+  return el("div", `font:11px/1.2 ${FONT};color:${C.label};margin:0 0 4px;letter-spacing:0.01em;`, text);
 }
 
 function mkSelect(options, value) {
   const s = stopDrag(
     el(
       "select",
-      "width:100%;padding:5px 7px;border-radius:6px;border:1px solid var(--border, #444);" +
-        "background:var(--background, #1b1b1b);color:var(--foreground, #eee);font-size:12px;cursor:pointer;box-sizing:border-box;",
+      `width:100%;padding:5px 7px;border-radius:6px;border:1px solid ${C.inputBorder};` +
+        `background:${C.inputBg};color:${C.text};font:11.5px/1.3 ${FONT};cursor:pointer;box-sizing:border-box;outline:none;`,
     ),
   );
   options.forEach((opt) => {
@@ -68,7 +85,7 @@ function mkSelect(options, value) {
 
 function mkSlider(min, max, step, value) {
   const row = el("div", "display:flex;align-items:center;gap:8px;");
-  const input = stopDrag(el("input", "flex:1;min-width:0;cursor:pointer;"));
+  const input = stopDrag(el("input", `flex:1;min-width:0;cursor:pointer;accent-color:${C.accentBar};`));
   input.type = "range";
   input.min = String(min);
   input.max = String(max);
@@ -76,7 +93,7 @@ function mkSlider(min, max, step, value) {
   input.value = String(value);
   const num = el(
     "span",
-    "font:11px/1 monospace;color:var(--muted-foreground, #aaa);min-width:36px;text-align:right;",
+    `font:11px/1 ${FONT};color:${C.muted};min-width:36px;text-align:right;`,
     Number(value).toFixed(2),
   );
   input.addEventListener("input", () => {
@@ -91,10 +108,10 @@ function mkCheck(label, checked) {
   const row = stopDrag(
     el(
       "label",
-      "display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;color:var(--foreground, #eee);",
+      `display:flex;align-items:center;gap:8px;font:11.5px/1.3 ${FONT};cursor:pointer;color:${C.text};`,
     ),
   );
-  const input = el("input", "cursor:pointer;");
+  const input = el("input", `cursor:pointer;accent-color:${C.accentBar};`);
   input.type = "checkbox";
   input.checked = !!checked;
   row.append(input, el("span", "", label));
@@ -102,12 +119,15 @@ function mkCheck(label, checked) {
   return row;
 }
 
-function mkBtn(label, title) {
+function mkBtn(label, title, { accent = false } = {}) {
   const b = stopDrag(
     el(
       "button",
-      "padding:6px 10px;border-radius:6px;border:1px solid var(--border, #444);background:var(--background, #1b1b1b);" +
-        "color:var(--foreground, #eee);font-size:12px;cursor:pointer;line-height:1.3;white-space:nowrap;width:100%;",
+      accent
+        ? `padding:6px 10px;border-radius:6px;border:1px solid ${C.accentBorder};background:${C.accentBg};` +
+          `color:${C.accent};font:11.5px/1.3 ${FONT};font-weight:600;cursor:pointer;width:100%;`
+        : `padding:6px 10px;border-radius:6px;border:1px solid ${C.inputBorder};background:${C.chipBg};` +
+          `color:${C.text};font:11.5px/1.3 ${FONT};cursor:pointer;width:100%;`,
       label,
     ),
   );
@@ -144,11 +164,11 @@ export default function DLSS5LiveImage(container, props) {
 
   const wrapper = el(
     "div",
-    "display:flex;flex-direction:column;gap:8px;width:100%;height:100%;min-height:360px;box-sizing:border-box;padding:6px;",
+    `display:flex;flex-direction:column;gap:8px;width:100%;height:100%;min-height:360px;box-sizing:border-box;padding:8px;` +
+      `background:${C.rootBg};border:1px solid ${C.rootBorder};border-radius:10px;font-family:${FONT};color:${C.text};`,
   );
-  wrapper.className = "nodrag nowheel";
+  wrapper.className = "nodrag nowheel dlss5-live-img-root";
 
-  // Landscape body (this is what goes fullscreen — not Restart/Stop/Bake on the node).
   const body = el(
     "div",
     "display:flex;flex-direction:row;gap:10px;flex:1 1 auto;min-height:320px;width:100%;box-sizing:border-box;",
@@ -156,41 +176,41 @@ export default function DLSS5LiveImage(container, props) {
 
   const stage = el(
     "div",
-    "position:relative;flex:1 1 62%;min-width:220px;min-height:280px;background:#0e0e0e;border-radius:8px;" +
-      "overflow:hidden;display:flex;align-items:center;justify-content:center;cursor:col-resize;user-select:none;",
+    `position:relative;flex:1 1 62%;min-width:220px;min-height:280px;background:${C.stageBg};border:1px solid ${C.rootBorder};` +
+      `border-radius:8px;overflow:hidden;display:flex;align-items:center;justify-content:center;cursor:col-resize;user-select:none;`,
   );
   const img = el("img", "display:none;width:100%;height:100%;object-fit:contain;pointer-events:none;");
   img.draggable = false;
   const placeholder = el(
     "div",
-    "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;" +
-      "padding:24px;color:var(--muted-foreground, #999);font-size:13px;line-height:1.4;pointer-events:none;",
+    `position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;` +
+      `padding:24px;color:${C.muted};font:12.5px/1.5 ${FONT};pointer-events:none;`,
     "Connect an image — live preview starts automatically.",
   );
   const badgeL = el(
     "div",
-    "position:absolute;left:8px;top:8px;padding:2px 7px;border-radius:4px;background:rgba(0,0,0,.55);" +
-      "color:#fff;font:11px/1.4 monospace;pointer-events:none;",
+    `position:absolute;left:8px;top:8px;padding:2px 7px;border-radius:5px;border:1px solid ${C.inputBorder};` +
+      `background:${C.chipBg};color:${C.label};font:10.5px/1.4 ${FONT};pointer-events:none;`,
     "BEFORE",
   );
   const badgeR = el(
     "div",
-    "position:absolute;right:8px;top:8px;padding:2px 7px;border-radius:4px;background:rgba(0,0,0,.55);" +
-      "color:#fff;font:11px/1.4 monospace;pointer-events:none;",
+    `position:absolute;right:8px;top:8px;padding:2px 7px;border-radius:5px;border:1px solid ${C.accentBorder};` +
+      `background:${C.accentBg};color:${C.accent};font:10.5px/1.4 ${FONT};pointer-events:none;`,
     "DLSS 5",
   );
   const hud = el(
     "div",
-    "position:absolute;left:8px;bottom:8px;padding:2px 7px;border-radius:4px;background:rgba(0,0,0,.55);" +
-      "color:#ddd;font:11px/1.4 monospace;pointer-events:none;white-space:pre;",
+    `position:absolute;left:8px;bottom:8px;padding:2px 7px;border-radius:5px;border:1px solid ${C.rootBorder};` +
+      `background:rgba(12,14,17,.85);color:${C.muted};font:10.5px/1.4 ${FONT};pointer-events:none;white-space:pre;`,
     "",
   );
   stage.append(img, placeholder, badgeL, badgeR, hud);
 
   const panel = el(
     "div",
-    "flex:0 0 280px;width:280px;max-width:42%;display:flex;flex-direction:column;gap:10px;" +
-      "overflow:auto;padding:2px 2px 6px;box-sizing:border-box;",
+    `flex:0 0 280px;width:280px;max-width:42%;display:flex;flex-direction:column;gap:10px;` +
+      `overflow:auto;padding:8px;box-sizing:border-box;background:${C.panelBg};border:1px solid ${C.rootBorder};border-radius:8px;`,
   );
 
   const lookSel = mkSelect(
@@ -214,7 +234,7 @@ export default function DLSS5LiveImage(container, props) {
   const skin = mkSlider(-1, 2, 0.01, settings.skin_structure);
   const mask = mkCheck("Auto mask (skin)", settings.auto_mask);
   const fullBtn = mkBtn("⛶  Full screen", "Full screen preview + controls (Esc to leave)");
-  const closeBtn = mkBtn("✕  Close full screen", "Leave full screen (Esc)");
+  const closeBtn = mkBtn("✕  Close full screen", "Leave full screen (Esc)", { accent: true });
   closeBtn.hidden = true;
 
   function block(label, control) {
@@ -241,11 +261,10 @@ export default function DLSS5LiveImage(container, props) {
   wrapper.append(body);
   container.appendChild(wrapper);
 
-  // Fullscreen overlay: only the landscape body (image + controls).
   const overlay = el(
     "div",
-    "position:fixed;inset:0;z-index:2147483000;background:#0a0a0a;display:none;flex-direction:column;" +
-      "padding:12px;box-sizing:border-box;",
+    `position:fixed;inset:0;z-index:2147483000;background:${C.rootBg};display:none;flex-direction:column;` +
+      `padding:12px;box-sizing:border-box;font-family:${FONT};color:${C.text};`,
   );
   overlay.className = "nodrag nowheel";
   overlay.tabIndex = 0;
@@ -259,7 +278,7 @@ export default function DLSS5LiveImage(container, props) {
     body.style.flex = "1 1 auto";
     body.style.minHeight = "0";
     body.style.height = "100%";
-    stage.style.borderRadius = "0";
+    stage.style.borderRadius = "8px";
     panel.style.maxWidth = "320px";
     panel.style.flex = "0 0 320px";
     panel.style.width = "320px";
@@ -281,7 +300,6 @@ export default function DLSS5LiveImage(container, props) {
     body.style.flex = "";
     body.style.minHeight = "320px";
     body.style.height = "";
-    stage.style.borderRadius = "8px";
     panel.style.maxWidth = "42%";
     panel.style.flex = "0 0 280px";
     panel.style.width = "280px";
@@ -301,8 +319,6 @@ export default function DLSS5LiveImage(container, props) {
   });
   fullBtn.addEventListener("click", enterFull);
   closeBtn.addEventListener("click", leaveFull);
-
-  // ── helpers ─────────────────────────────────────────────────────────────
 
   function cmd(params) {
     if (!url) return;
@@ -363,7 +379,6 @@ export default function DLSS5LiveImage(container, props) {
     mask._input.checked = !!p.auto_mask;
   }
 
-  // GPU only — used while dragging sliders.
   function pushLiveCmd() {
     cmd({
       local_tone: settings.local_tone,
@@ -376,7 +391,6 @@ export default function DLSS5LiveImage(container, props) {
     });
   }
 
-  // GPU + sync node (dropdowns / release).
   function pushLive() {
     pushLiveCmd();
     emitSettings();
@@ -394,7 +408,7 @@ export default function DLSS5LiveImage(container, props) {
     input.addEventListener("input", () => {
       settings[key] = Number(input.value);
       markCustom();
-      pushLiveCmd(); // no onChange while dragging
+      pushLiveCmd();
     });
     const commit = () => {
       settings[key] = Number(input.value);
