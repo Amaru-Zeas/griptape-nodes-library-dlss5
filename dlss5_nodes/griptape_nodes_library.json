@@ -3,7 +3,7 @@
     "library_schema_version": "0.1.0",
     "metadata": {
         "author": "Griptape Community",
-        "description": "NVIDIA DLSS 5 Neural Rendering (+ DLSS Super Resolution) for video and images. Live preview nodes (video + still) plus one-shot bake nodes. Windows + RTX only.",
+        "description": "NVIDIA DLSS 5 Neural Rendering (+ DLSS Super Resolution) for video and images. Live Video and Live Image nodes plus one-shot bake nodes. Windows + RTX only.",
         "library_version": "0.1.0",
         "engine_version": "0.67.0",
         "tags": [
@@ -46,7 +46,7 @@
         {
             "name": "DLSS5LivePreview",
             "path": "widgets/DLSS5LivePreview.js",
-            "description": "Live before/after MJPEG preview with wipe, transport and scrubber for the DLSS 5 Live Preview node."
+            "description": "Live before/after MJPEG preview with wipe, transport and scrubber for the DLSS 5 Live Video node."
         },
         {
             "name": "DLSS5LiveImage",
@@ -88,7 +88,7 @@
             "metadata": {
                 "category": "DLSS5",
                 "description": "Loop a clip through the native DLSS 5 worker and adjust tone / structure / skin / style live with a before-after wipe; Bake renders the full clip to the project's outputs. Uses the bundled native worker with the DLLs from a DLSS 5 Visual Enhancer install.",
-                "display_name": "DLSS 5 Live Preview"
+                "display_name": "DLSS 5 Live Video"
             }
         },
         {

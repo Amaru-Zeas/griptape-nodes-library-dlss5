@@ -47,7 +47,7 @@ Settings -> `dlss5` -> `runtime_dir` = the unzipped folder (the one containing
 picked up. You can also paste the path into a node's `runtime_dir` field instead.
 
 **3. Wire it up**
-Two nodes, same controls: **DLSS 5 Live Preview** to find the look in real time (see
+Two nodes, same controls: **DLSS 5 Live Video** to find the look in real time (see
 below), **DLSS 5 Neural Render (Video)** for straight batch renders.
 Load Video -> **DLSS 5 Neural Render (Video)** -> Display Video.
 The `video` row at the top has the input port on the left and a pass-through output
@@ -103,18 +103,18 @@ picks PNG / JPEG / WebP). Alpha is kept. Like the video node, the `image` row ha
 pass-through out-port for a Compare Images node.
 
 **Live Image - dial a still in real time**
-**DLSS 5 Live Image** is the still version of Live Preview. Landscape widget: wipe on
+**DLSS 5 Live Image** is the still version of Live Video. Landscape widget: wipe on
 the left, look controls on the right. Connect an image and it starts automatically
 (native worker). Slider changes apply on the next evaluate; *Bake image with these
 settings* writes `output_image`. Keep **DLSS 5 Neural Render (Image)** for one-shot
 bakes without the live UI.
 
-**Live Preview node - dial the look in real time**
-**DLSS 5 Live Preview** is the second node. Instead of rendering and waiting, it loops
+**Live Video node - dial the look in real time**
+**DLSS 5 Live Video** is the second node. Instead of rendering and waiting, it loops
 your clip through a resident DLSS 5 worker and shows the result *inside the node* while
 you move the sliders. Use it to find the settings, then bake.
 
-- *Start live preview*: first frame after ~1.5 s (D3D12 + NGX start-up), then the clip
+- *Start live video*: first frame after ~1.5 s (D3D12 + NGX start-up), then the clip
   plays at its own frame rate while the rest of it decodes into RAM in the background.
   Only the native worker is used here and it loads NVIDIA's DLLs straight out of the
   Visual Enhancer folder from step 2 - nothing to copy.
@@ -141,7 +141,7 @@ you move the sliders. Use it to find the settings, then bake.
   with the current settings, saves it through the project's outputs as `output_file`
   (default `dlss5_live.mp4`) and puts it on `output_video`. Playback pauses during
   the bake and resumes after.
-- *Stop live preview* frees the GPU. The loop also stops itself when the node is
+- *Stop live video* frees the GPU. The loop also stops itself when the node is
   deleted or the engine exits, and pauses after 20 s with nobody watching.
 
 **Verification**

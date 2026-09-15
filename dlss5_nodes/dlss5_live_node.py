@@ -1,4 +1,4 @@
-"""DLSS 5 Live Preview node.
+"""DLSS 5 Live Video node.
 
 Loops a clip through the *native* DLSS 5 worker in live mode and shows the result in the
 node while you move the sliders: tone / structure / skin / mask / style take effect on the
@@ -135,7 +135,7 @@ class _NodeAlive:
 
 
 class DLSS5LivePreviewNode(ControlNode):
-    """Real-time DLSS 5 preview with live sliders, plus a bake to the project's outputs."""
+    """Real-time DLSS 5 video preview with live sliders, plus a bake to the project's outputs."""
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -144,6 +144,7 @@ class DLSS5LivePreviewNode(ControlNode):
         self._bake_thread: threading.Thread | None = None
         self._session_key = id(self)
         self._finalizer = weakref.finalize(self, _stop_session, self._session_key)
+        self.set_initial_node_size(width=720, height=980)
 
         # -- video in / out -----------------------------------------------------------
         self.add_parameter(
@@ -171,7 +172,7 @@ class DLSS5LivePreviewNode(ControlNode):
         self.add_parameter(
             ParameterDict(
                 name="live_preview",
-                default_value={"status": "stopped", "url": "", "message": "Press  Start live preview."},
+                default_value={"status": "stopped", "url": "", "message": "Press  Start live video."},
                 tooltip=(
                     "Live before/after view. Drag on the image to move the wipe; use the transport to pause, step and "
                     "scrub. Slider changes show up on the next frame."
@@ -179,14 +180,16 @@ class DLSS5LivePreviewNode(ControlNode):
                 allowed_modes={ParameterMode.PROPERTY},
                 traits={Widget(name=WIDGET_NAME, library=LIBRARY_NAME)},
                 hide_label=True,
+                ui_options={"height": 340, "is_full_width": True},
             )
         )
         self.add_node_element(
             ParameterButton(
                 name="start_live",
-                label="Start live preview",
+                label="Start live video",
                 icon="play",
-                variant="default",
+                variant="secondary",
+                icon_class="text-[#d9c6a4]",
                 full_width=True,
                 tooltip="Start (or restart) the resident DLSS 5 worker and loop the clip in the preview above.",
                 on_click=self._on_start_clicked,
@@ -195,7 +198,7 @@ class DLSS5LivePreviewNode(ControlNode):
         self.add_node_element(
             ParameterButton(
                 name="stop_live",
-                label="Stop live preview",
+                label="Stop live video",
                 icon="square",
                 variant="secondary",
                 full_width=True,
@@ -281,7 +284,8 @@ class DLSS5LivePreviewNode(ControlNode):
                 name="bake",
                 label="Bake full clip with these settings",
                 icon="film",
-                variant="default",
+                variant="secondary",
+                icon_class="text-[#d9c6a4]",
                 full_width=True,
                 tooltip="Render every frame with the current settings to output_file (project outputs) -> output_video.",
                 on_click=self._on_bake_clicked,

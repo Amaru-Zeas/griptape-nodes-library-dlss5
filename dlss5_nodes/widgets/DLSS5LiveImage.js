@@ -272,6 +272,9 @@ export default function DLSS5LiveImage(container, props) {
   const restartBtn = mkBtn("▶  Start live preview", "Start the resident worker on the current image");
   const stopBtn = mkBtn("■  Stop live preview", "Stop the worker and free the GPU");
   const fullBtn = mkBtn("⛶  Full screen", "Full screen preview + controls (Esc to leave)");
+  const bakeBtn = mkBtn("Bake image with these settings", "Render the still with the current live settings", {
+    accent: true,
+  });
   const closeBtn = mkBtn("✕  Close full screen", "Leave full screen (Esc)", { accent: true });
   closeBtn.hidden = true;
 
@@ -294,6 +297,7 @@ export default function DLSS5LiveImage(container, props) {
     restartBtn,
     stopBtn,
     fullBtn,
+    bakeBtn,
     closeBtn,
   );
 
@@ -679,6 +683,7 @@ export default function DLSS5LiveImage(container, props) {
     if (stopBtn.disabled) return;
     emitAction("stop");
   });
+  bakeBtn.addEventListener("click", () => emitAction("bake"));
   viewSel.addEventListener("change", () => {
     settings.view = viewSel.value;
     applyView();

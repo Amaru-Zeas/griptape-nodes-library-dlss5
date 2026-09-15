@@ -82,7 +82,7 @@ the node reports what is missing.
    (reports the init failure reason on stderr) and writes `DLSS5Worker.exe` plus the
    caller shim `nvngx.dll` into `dlss5_nodes/runtime/`.
 
-2. Give the worker a **`nvngx_dlssnr.dll`**. The **Live Preview** node needs nothing more
+2. Give the worker a **`nvngx_dlssnr.dll`**. The **Live Video** node needs nothing more
    than a configured DLSS 5 Visual Enhancer folder: it loads the snippet (and
    `nvngx_dlss.dll` for upscaling) from there in place. For the render node's `native`
    backend, copy a legitimately obtained copy into `dlss5_nodes/runtime/`.
@@ -101,7 +101,7 @@ fails with instructions for both options. The chosen backend is the first log li
 
 The library ships three nodes: **Instructions** (a read-me note with setup steps, best
 settings and troubleshooting), **DLSS 5 Neural Render (Video)** (batch render, either
-backend) and **DLSS 5 Live Preview** (real-time sliders on a looping clip + bake, native
+backend) and **DLSS 5 Live Video** (real-time sliders on a looping clip + bake, native
 worker only - see below).
 
 Layout: the `video` row sits at the top with its input port on the left and a pass-through
@@ -192,7 +192,7 @@ settings* (or run the node in a flow) writes `output_image` through the project'
 | `output_file` / `output_format` | Bake destination (default `dlss5_live.png`) and PNG / JPEG / WebP. |
 | **Advanced** | `preview_width` (stream cap; bake stays full-res), `runtime_dir`. |
 
-## Node: DLSS 5 Live Preview
+## Node: DLSS 5 Live Video
 
 Real-time version of the render node: the clip loops through a resident native worker
 and the result is shown *inside the node* while you drag the sliders. Look changes
@@ -208,7 +208,7 @@ next to the worker.
 
 How to use:
 
-1. Connect a video, press **Start live preview**. First frame appears after ~1.5 s
+1. Connect a video, press **Start live video**. First frame appears after ~1.5 s
    (D3D12 + NGX init); the clip then loops at its own frame rate while a decoder thread
    fills the RAM cache behind it.
 2. Drag on the picture to move the **wipe** (source left, DLSS 5 right). View menu:
@@ -220,7 +220,7 @@ How to use:
    `save_node_output` situation via `output_file` (default `dlss5_live.mp4`, no static
    folders) and placed on `output_video`. The live loop pauses during the bake and
    resumes afterwards.
-5. **Stop live preview** releases the GPU worker. The session also stops itself when the
+5. **Stop live video** releases the GPU worker. The session also stops itself when the
    node is deleted, when the engine exits, or after 20 s without anyone watching the
    stream (worker stays resident and resumes when the preview is visible again).
 

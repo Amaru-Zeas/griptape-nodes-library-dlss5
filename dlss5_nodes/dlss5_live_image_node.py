@@ -87,7 +87,9 @@ DEFAULT_LIVE = {
 DEFAULT_OUTPUT_FILENAME = "dlss5_live.png"
 NODE_WIDTH_NORMAL = 860
 NODE_WIDTH_SPLIT = 1340
-NODE_HEIGHT = 560
+# Fresh drop: title + ports + landscape widget + output_file + bake + collapsed groups.
+NODE_HEIGHT = 820
+WIDGET_HEIGHT = 460
 
 # Transient flags the widget/node exchange; never persisted, never treated as settings.
 _WIDGET_ONLY_KEYS = frozenset({"_fromWidget", "_action", "_fromNode"})
@@ -148,7 +150,7 @@ class DLSS5LiveImageNode(ControlNode):
                 allowed_modes={ParameterMode.PROPERTY},
                 traits={Widget(name=WIDGET_NAME, library=LIBRARY_NAME)},
                 hide_label=True,
-                ui_options={"height": 420, "is_full_width": True},
+                ui_options={"height": WIDGET_HEIGHT, "is_full_width": True},
             )
         )
 
@@ -184,10 +186,12 @@ class DLSS5LiveImageNode(ControlNode):
                 name="bake",
                 label="Bake image with these settings",
                 icon="image",
-                variant="default",
+                variant="secondary",
+                icon_class="text-[#d9c6a4]",
                 full_width=True,
                 tooltip="Render the still with the current live settings to output_file -> output_image.",
                 on_click=self._on_bake_clicked,
+                hide=True,
             )
         )
 
@@ -376,6 +380,9 @@ class DLSS5LiveImageNode(ControlNode):
                 return
             if action == "stop":
                 self._on_stop_clicked()
+                return
+            if action == "bake":
+                self._on_bake_clicked()
                 return
             session = self._session()
             if session is not None and session.running:

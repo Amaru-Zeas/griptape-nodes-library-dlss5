@@ -1,13 +1,32 @@
-// DLSS 5 Live Preview widget.
+// DLSS 5 Live Video widget.
 //
-// Shows the MJPEG stream served by the node's LiveSession (a tiny HTTP server on
-// 127.0.0.1) and offers transport + before/after controls. The parameter value
-// (set by the node) looks like:
-//   { url: "http://127.0.0.1:PORT", status: "running"|"stopped"|"error", message: "..." }
-// Commands go straight to the server (GET /cmd?...) so a wipe drag does not travel
-// through the engine; the node itself only sets the value above.
+// Visual language matches Shot Planner / Seedance / Live Image:
+// dark gray chrome (#0c0e11), muted amber accent (#d9c6a4 / #a58050), ui-monospace.
+//
+// Shows the MJPEG stream served by the node's LiveSession (127.0.0.1) with
+// transport + before/after controls. Commands go straight to /cmd so a wipe
+// drag does not travel through the engine.
 
 const POLL_MS = 500;
+const FULL_SCALE = 1.2;
+
+const FONT = "ui-monospace,'Cascadia Code','JetBrains Mono',Consolas,monospace";
+const C = {
+  rootBg: "#0c0e11",
+  rootBorder: "#21252c",
+  text: "#c6cad1",
+  label: "#8a929e",
+  muted: "#6c7481",
+  inputBg: "#0f1116",
+  inputBorder: "#333a44",
+  chipBg: "#161a20",
+  panelBg: "#12151a",
+  accent: "#d9c6a4",
+  accentBorder: "#6b5836",
+  accentBg: "#241d13",
+  accentBar: "#a58050",
+  stageBg: "#0a0c0f",
+};
 
 function el(tag, css, text) {
   const e = document.createElement(tag);
@@ -16,16 +35,61 @@ function el(tag, css, text) {
   return e;
 }
 
-function btn(label, title) {
-  const b = el(
-    "button",
-    "padding:3px 9px;border-radius:5px;border:1px solid var(--border, #444);background:var(--background, #1b1b1b);" +
-      "color:var(--foreground, #eee);font-size:12px;cursor:pointer;line-height:1.3;white-space:nowrap;",
-    label,
+function stopDrag(node) {
+  ["pointerdown", "mousedown", "dblclick"].forEach((ev) =>
+    node.addEventListener(ev, (e) => e.stopPropagation()),
+  );
+  return node;
+}
+
+function mkBtn(label, title, { accent = false, compact = false } = {}) {
+  const idleBorder = accent ? C.accentBorder : C.inputBorder;
+  const idleBg = accent ? C.accentBg : C.chipBg;
+  const idleFg = accent ? C.accent : C.text;
+  const pad = compact ? "padding:4px 9px;" : "padding:6px 10px;";
+  const b = stopDrag(
+    el(
+      "button",
+      pad +
+        `border-radius:6px;border:1px solid ${idleBorder};background:${idleBg};` +
+        `color:${idleFg};font:11.5px/1.3 ${FONT};${accent ? "font-weight:600;" : ""}cursor:pointer;` +
+        `white-space:nowrap;` +
+        `transition:background-color .12s ease,border-color .12s ease,color .12s ease,filter .12s ease;`,
+      label,
+    ),
   );
   if (title) b.title = title;
-  ["pointerdown", "mousedown", "dblclick"].forEach((ev) => b.addEventListener(ev, (e) => e.stopPropagation()));
+  b.addEventListener("mouseenter", () => {
+    if (b.disabled) return;
+    b.style.filter = "brightness(1.28)";
+    b.style.borderColor = C.accentBorder;
+    b.style.color = C.accent;
+  });
+  b.addEventListener("mouseleave", () => {
+    b.style.filter = "";
+    b.style.borderColor = idleBorder;
+    b.style.color = idleFg;
+  });
   return b;
+}
+
+function mkSelect(options, value) {
+  const s = stopDrag(
+    el(
+      "select",
+      `padding:4px 7px;border-radius:6px;border:1px solid ${C.inputBorder};` +
+        `background:${C.inputBg};color:${C.text};font:11.5px/1.3 ${FONT};cursor:pointer;outline:none;`,
+    ),
+  );
+  options.forEach((opt) => {
+    const [v, t] = Array.isArray(opt) ? opt : [opt, opt];
+    const o = document.createElement("option");
+    o.value = v;
+    o.textContent = t;
+    s.appendChild(o);
+  });
+  if (value !== undefined) s.value = value;
+  return s;
 }
 
 export default function DLSS5LivePreview(container, props) {
@@ -36,131 +100,129 @@ export default function DLSS5LivePreview(container, props) {
 
   let url = "";
   let pollTimer = null;
+  let firstFrameTimer = null;
+  let retryTimer = null;
   let dragging = false;
   let lastState = null;
   let streamToken = 0;
+  let fullscreen = false;
 
-  // ── DOM ─────────────────────────────────────────────────────────────────
-  // The node gives the widget a fixed-height box: fill it (stage grows, bar stays at the bottom).
   const wrapper = el(
     "div",
-    "display:flex;flex-direction:column;gap:6px;width:100%;height:100%;min-height:300px;box-sizing:border-box;padding:4px;",
+    `display:flex;flex-direction:column;gap:8px;width:100%;height:100%;min-height:280px;box-sizing:border-box;padding:8px;` +
+      `background:${C.rootBg};border:1px solid ${C.rootBorder};border-radius:10px;font-family:${FONT};color:${C.text};`,
   );
-  wrapper.className = "nodrag nowheel";
+  wrapper.className = "nodrag nowheel dlss5-live-video-root";
 
   const stage = el(
     "div",
-    "position:relative;flex:1 1 0;min-height:180px;background:#0e0e0e;border-radius:8px;overflow:hidden;" +
-      "display:flex;align-items:center;justify-content:center;cursor:col-resize;user-select:none;",
+    `position:relative;flex:1 1 0;min-height:180px;background:${C.stageBg};border:1px solid ${C.rootBorder};` +
+      `border-radius:8px;overflow:hidden;display:flex;align-items:center;justify-content:center;` +
+      `cursor:col-resize;user-select:none;`,
   );
   const img = el("img", "display:none;width:100%;height:100%;object-fit:contain;pointer-events:none;");
   img.draggable = false;
   img.alt = "";
   const placeholder = el(
     "div",
-    "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;" +
-      "padding:20px;color:var(--muted-foreground, #999);font-size:13px;line-height:1.4;pointer-events:none;",
-    "Press  Start live preview  on the node.",
+    `position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;` +
+      `padding:20px;color:${C.muted};font:12.5px/1.5 ${FONT};pointer-events:none;z-index:3;`,
+    "Press  Start live video  on the node.",
   );
   const badgeL = el(
     "div",
-    "position:absolute;left:8px;top:8px;padding:2px 7px;border-radius:4px;background:rgba(0,0,0,.6);" +
-      "color:#fff;font:11px/1.4 monospace;pointer-events:none;",
+    `position:absolute;left:8px;top:8px;padding:2px 7px;border-radius:5px;border:1px solid ${C.inputBorder};` +
+      `background:${C.chipBg};color:${C.label};font:10.5px/1.4 ${FONT};pointer-events:none;z-index:2;`,
     "BEFORE",
   );
   const badgeR = el(
     "div",
-    "position:absolute;right:8px;top:8px;padding:2px 7px;border-radius:4px;background:rgba(0,0,0,.6);" +
-      "color:#fff;font:11px/1.4 monospace;pointer-events:none;",
+    `position:absolute;right:8px;top:8px;padding:2px 7px;border-radius:5px;border:1px solid ${C.accentBorder};` +
+      `background:${C.accentBg};color:${C.accent};font:10.5px/1.4 ${FONT};pointer-events:none;z-index:2;`,
     "DLSS 5",
   );
   const hud = el(
     "div",
-    "position:absolute;left:8px;bottom:8px;padding:2px 7px;border-radius:4px;background:rgba(0,0,0,.6);" +
-      "color:#ddd;font:11px/1.4 monospace;pointer-events:none;white-space:pre;",
+    `position:absolute;left:8px;bottom:8px;padding:2px 7px;border-radius:5px;border:1px solid ${C.rootBorder};` +
+      `background:rgba(12,14,17,.85);color:${C.muted};font:10.5px/1.4 ${FONT};pointer-events:none;white-space:pre;z-index:2;`,
     "",
   );
   stage.append(img, placeholder, badgeL, badgeR, hud);
 
-  const bar = el("div", "display:flex;align-items:center;gap:6px;flex-wrap:wrap;");
-  const playBtn = btn("Pause", "Play / pause (space)");
-  const prevBtn = btn("‹", "Previous frame");
-  const nextBtn = btn("›", "Next frame");
-  const scrub = el("input", "flex:1;min-width:80px;cursor:pointer;");
+  const bar = el(
+    "div",
+    `display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:6px 8px;` +
+      `background:${C.panelBg};border:1px solid ${C.rootBorder};border-radius:8px;`,
+  );
+  const playBtn = mkBtn("Pause", "Play / pause (space)", { compact: true });
+  const prevBtn = mkBtn("‹", "Previous frame", { compact: true });
+  const nextBtn = mkBtn("›", "Next frame", { compact: true });
+  const scrub = stopDrag(el("input", `flex:1;min-width:80px;cursor:pointer;accent-color:${C.accentBar};`));
   scrub.type = "range";
   scrub.min = "0";
   scrub.max = "0";
   scrub.step = "1";
   scrub.value = "0";
-  ["pointerdown", "mousedown"].forEach((ev) => scrub.addEventListener(ev, (e) => e.stopPropagation()));
-  const frameLbl = el("span", "font:11px monospace;color:var(--muted-foreground, #aaa);min-width:70px;text-align:right;", "0 / 0");
-
-  const viewSel = el(
-    "select",
-    "padding:3px 6px;border-radius:5px;border:1px solid var(--border, #444);background:var(--background, #1b1b1b);" +
-      "color:var(--foreground, #eee);font-size:12px;cursor:pointer;",
+  const frameLbl = el(
+    "span",
+    `font:11px/1 ${FONT};color:${C.muted};min-width:70px;text-align:right;`,
+    "0 / 0",
   );
-  [
-    ["wipe", "Wipe (drag)"],
-    ["after", "DLSS 5 only"],
-    ["before", "Source only"],
-    ["split", "Side by side"],
-  ].forEach(([v, t]) => {
-    const o = document.createElement("option");
-    o.value = v;
-    o.textContent = t;
-    viewSel.appendChild(o);
-  });
-  ["pointerdown", "mousedown"].forEach((ev) => viewSel.addEventListener(ev, (e) => e.stopPropagation()));
-
-  const speedSel = el(
-    "select",
-    "padding:3px 6px;border-radius:5px;border:1px solid var(--border, #444);background:var(--background, #1b1b1b);" +
-      "color:var(--foreground, #eee);font-size:12px;cursor:pointer;",
+  const viewSel = mkSelect(
+    [
+      ["wipe", "Wipe (drag)"],
+      ["after", "DLSS 5 only"],
+      ["before", "Source only"],
+      ["split", "Side by side (full)"],
+    ],
+    "wipe",
+  );
+  const speedSel = mkSelect(
+    [
+      ["0.25", "0.25x"],
+      ["0.5", "0.5x"],
+      ["1", "1x"],
+      ["2", "2x"],
+      ["0", "Max"],
+    ],
+    "1",
   );
   speedSel.title = "Playback speed relative to the clip's frame rate. Max = as fast as the pipeline goes.";
-  [
-    ["0.25", "0.25x"],
-    ["0.5", "0.5x"],
-    ["1", "1x"],
-    ["2", "2x"],
-    ["0", "Max"],
-  ].forEach(([v, t]) => {
-    const o = document.createElement("option");
-    o.value = v;
-    o.textContent = t;
-    speedSel.appendChild(o);
-  });
-  speedSel.value = "1";
-  ["pointerdown", "mousedown"].forEach((ev) => speedSel.addEventListener(ev, (e) => e.stopPropagation()));
-
-  const fullBtn = btn("⛶", "Full screen (Esc to leave)");
-  const closeBtn = btn("✕ Close", "Leave full screen (Esc)");
+  const fullBtn = mkBtn("⛶  Full screen", "Full screen preview + transport (Esc to leave)", { compact: true });
+  const closeBtn = mkBtn("✕  Close full screen", "Leave full screen (Esc)", { accent: true, compact: true });
   closeBtn.hidden = true;
 
   bar.append(playBtn, prevBtn, nextBtn, scrub, frameLbl, speedSel, viewSel, fullBtn, closeBtn);
   wrapper.append(stage, bar);
   container.appendChild(wrapper);
 
-  // ── full screen ─────────────────────────────────────────────────────────
-  // The same stage + bar are moved into a fixed overlay (one MJPEG connection, all
-  // listeners intact) and moved back on exit. Uses the Fullscreen API when allowed.
+  // Overlay itself is unscaled (fullscreen UA rules force 100% / transform:none).
+  // Inner scaler is laid out at 1/FULL_SCALE and transformed up so UI is 20% larger
+  // with exact pointer hit-testing (CSS zoom breaks range sliders).
   const overlay = el(
     "div",
-    "position:fixed;inset:0;z-index:2147483000;background:#000;display:none;flex-direction:column;gap:8px;" +
-      "padding:10px;box-sizing:border-box;",
+    `position:fixed;inset:0;z-index:2147483000;background:${C.rootBg};display:none;overflow:hidden;` +
+      `font-family:${FONT};color:${C.text};`,
   );
   overlay.className = "nodrag nowheel";
   overlay.tabIndex = 0;
-  let fullscreen = false;
+  const scaler = el(
+    "div",
+    `width:${(100 / FULL_SCALE).toFixed(4)}%;height:${(100 / FULL_SCALE).toFixed(4)}%;` +
+      `transform:scale(${FULL_SCALE});transform-origin:0 0;display:flex;flex-direction:column;gap:8px;` +
+      `padding:12px;box-sizing:border-box;`,
+  );
+  scaler.className = "nodrag nowheel";
+  overlay.append(scaler);
 
   function enterFull() {
     if (fullscreen) return;
     fullscreen = true;
     document.body.appendChild(overlay);
-    overlay.append(stage, bar);
-    overlay.style.display = "flex";
-    stage.style.borderRadius = "0";
+    scaler.append(stage, bar);
+    overlay.style.display = "block";
+    stage.style.flex = "1 1 auto";
+    stage.style.minHeight = "0";
     bar.style.justifyContent = "center";
     fullBtn.hidden = true;
     closeBtn.hidden = false;
@@ -171,11 +233,14 @@ export default function DLSS5LivePreview(container, props) {
   function leaveFull() {
     if (!fullscreen) return;
     fullscreen = false;
-    if (document.fullscreenElement === overlay && document.exitFullscreen) document.exitFullscreen().catch(() => {});
+    if (document.fullscreenElement === overlay && document.exitFullscreen) {
+      document.exitFullscreen().catch(() => {});
+    }
     wrapper.append(stage, bar);
     overlay.style.display = "none";
     overlay.remove();
-    stage.style.borderRadius = "8px";
+    stage.style.flex = "";
+    stage.style.minHeight = "180px";
     bar.style.justifyContent = "";
     fullBtn.hidden = false;
     closeBtn.hidden = true;
@@ -203,7 +268,6 @@ export default function DLSS5LivePreview(container, props) {
     else enterFull();
   });
 
-  // ── server I/O ──────────────────────────────────────────────────────────
   function cmd(params) {
     if (!url) return;
     const q = new URLSearchParams(params).toString();
@@ -231,11 +295,12 @@ export default function DLSS5LivePreview(container, props) {
     const perf = s.playing ? `${s.play_fps} fps · ` : "";
     const enc = s.encode_ms !== undefined ? ` · ${s.encode_ms} ms preview` : "";
     const dec = s.decoding ? " · decoding…" : "";
-    hud.textContent = `${size}  ${perf}${s.worker_ms} ms GPU · ${s.frame_ms} ms/frame${enc}${s.sequence ? " · temporal" : ""}${dec}` +
+    hud.textContent =
+      `${size}  ${perf}${s.worker_ms} ms GPU · ${s.frame_ms} ms/frame${enc}${s.sequence ? " · temporal" : ""}${dec}` +
       (s.message && s.message !== "live" ? `\n${s.message}` : "");
     if (s.error) {
       placeholder.textContent = s.error;
-      placeholder.hidden = false;
+      placeholder.style.display = "flex";
     }
   }
 
@@ -249,11 +314,24 @@ export default function DLSS5LivePreview(container, props) {
     }
   }
 
+  function showImage() {
+    img.style.display = "block";
+    placeholder.style.display = "none";
+    if (firstFrameTimer) {
+      clearInterval(firstFrameTimer);
+      firstFrameTimer = null;
+    }
+  }
+
   function startStream() {
     streamToken++;
     img.src = `${url}/stream.mjpg?t=${Date.now()}-${streamToken}`;
-    img.style.display = "block";
-    placeholder.hidden = true;
+    placeholder.style.display = "flex";
+    placeholder.textContent = "Starting DLSS 5…";
+    if (firstFrameTimer) clearInterval(firstFrameTimer);
+    firstFrameTimer = setInterval(() => {
+      if (img.naturalWidth > 0) showImage();
+    }, 100);
     clearInterval(pollTimer);
     pollTimer = setInterval(poll, POLL_MS);
     poll();
@@ -262,16 +340,32 @@ export default function DLSS5LivePreview(container, props) {
   function stopStream(message) {
     clearInterval(pollTimer);
     pollTimer = null;
+    if (firstFrameTimer) {
+      clearInterval(firstFrameTimer);
+      firstFrameTimer = null;
+    }
+    if (retryTimer) {
+      clearTimeout(retryTimer);
+      retryTimer = null;
+    }
     img.removeAttribute("src");
     img.style.display = "none";
-    placeholder.textContent = message || "Press  Start live preview  on the node.";
-    placeholder.hidden = false;
+    placeholder.textContent = message || "Press  Start live video  on the node.";
+    placeholder.style.display = "flex";
     hud.textContent = "";
     badgeL.hidden = badgeR.hidden = true;
     leaveFull();
   }
 
-  // ── interaction ─────────────────────────────────────────────────────────
+  img.addEventListener("load", showImage);
+  img.addEventListener("error", () => {
+    if (!url || retryTimer) return;
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      if (url) startStream();
+    }, 1000);
+  });
+
   function wipeFromEvent(e) {
     const rect = img.getBoundingClientRect();
     if (!rect.width) return;
@@ -293,7 +387,9 @@ export default function DLSS5LivePreview(container, props) {
     dragging = false;
     try {
       stage.releasePointerCapture(e.pointerId);
-    } catch {}
+    } catch {
+      /* already released */
+    }
   };
   stage.addEventListener("pointerup", endDrag);
   stage.addEventListener("pointercancel", endDrag);
@@ -320,7 +416,6 @@ export default function DLSS5LivePreview(container, props) {
   });
   wrapper.tabIndex = 0;
 
-  // ── value updates from the node ─────────────────────────────────────────
   function update(newProps) {
     let v = newProps?.value ?? {};
     if (typeof v === "string") {
@@ -334,7 +429,7 @@ export default function DLSS5LivePreview(container, props) {
     if (nextUrl !== url) {
       url = nextUrl;
       if (url) startStream();
-      else stopStream(v.message || (v.status === "error" ? "Live preview failed." : undefined));
+      else stopStream(v.message || (v.status === "error" ? "Live video failed." : undefined));
     } else if (!url && v.message) {
       placeholder.textContent = v.message;
     }
@@ -342,6 +437,8 @@ export default function DLSS5LivePreview(container, props) {
 
   function cleanup() {
     clearInterval(pollTimer);
+    if (firstFrameTimer) clearInterval(firstFrameTimer);
+    if (retryTimer) clearTimeout(retryTimer);
     leaveFull();
     document.removeEventListener("fullscreenchange", onFsChange);
     img.removeAttribute("src");
